@@ -699,6 +699,11 @@ class DashboardFrame(ttk.Frame):
                         row_values.append(f"{rec.contextual_score:.0f}")
                     else:
                         row_values.append("-")
+                elif field == "model":
+                    if rec and rec.model_pick is not None:
+                        row_values.append(f"{rec.model_pick:.0f}%")
+                    else:
+                        row_values.append("-")
                 elif field == "colors":
                     row_values.append("".join(card.get("colors", [])))
                 elif field == "tags":

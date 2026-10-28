@@ -489,6 +489,12 @@ class CompactOverlay(tb.Toplevel):
                             row_values.append(f"{rec.contextual_score:.0f}")
                         else:
                             row_values.append("-")
+                    elif field == "model":
+                        row_values.append(
+                            f"{rec.model_pick:.0f}%"
+                            if rec and rec.model_pick is not None
+                            else "-"
+                        )
                     elif field == "colors":
                         row_values.append("".join(card.get("colors", [])))
                     elif field == "tags":

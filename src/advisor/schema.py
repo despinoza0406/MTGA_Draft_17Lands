@@ -19,3 +19,4 @@ class Recommendation(BaseModel):
     is_elite: bool = False
     archetype_fit: str = "Neutral"
     tags: List[str] = []
+    model_pick: Optional[float] = None  # 0.0 to 100.0 (trained pick model)

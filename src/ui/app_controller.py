@@ -14,6 +14,7 @@ from typing import Dict
 from src import constants
 from src.configuration import write_configuration
 from src.advisor.engine import DraftAdvisor
+from src.advisor.pick_model import load_pick_model
 from src.signals import SignalCalculator
 from src.card_logic import filter_options, get_deck_metrics
 from src.app_update import AppUpdate
@@ -224,6 +225,16 @@ class AppController:
         # Pass signals securely into Advisor
         advisor = DraftAdvisor(metrics, taken_cards, signals=scores)
         recommendations = advisor.evaluate_pack(pack_cards, pi, current_pack=pk)
+
+        # Trained pick model (optional; only when a model exists for this set)
+        pick_model = load_pick_model(es, et)
+        if pick_model and recommendations:
+            try:
+                model_scores = pick_model.score_pack(pack_cards, taken_cards, pk, pi)
+                for rec in recommendations:
+                    rec.model_pick = model_scores.get(rec.card_name)
+            except Exception as e:
+                logger.warning(f"Pick model scoring error: {e}")
 
         # UPDATE UI STATE
         if pk > 0:
