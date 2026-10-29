@@ -116,6 +116,18 @@ def main():
         shutil.copyfile(model, installed)
         print(f"installed {installed}")
 
+    # Mulligan / opening hand benchmarks for the post-game review (game dump)
+    game_dump = os.path.join(args.data_dir, f"game_data_public.{set_code}.{args.event}.csv.gz")
+    bench = os.path.join(args.data_dir, f"{name}_benchmarks.json")
+    bench_installed = os.path.join(args.tool_dir, "Models", f"{name}_benchmarks.json")
+    stale = not os.path.exists(bench_installed) or os.path.getmtime(bench_installed) < os.path.getmtime(game_dump)
+    if stale or args.force:
+        _load_deck_module("benchmarks").main(game_dump, bench, set_file)
+        shutil.copyfile(bench, bench_installed)
+        print(f"installed {bench_installed}")
+    else:
+        print(f"benchmarks already current: {bench_installed}")
+
 
 if __name__ == "__main__":
     main()

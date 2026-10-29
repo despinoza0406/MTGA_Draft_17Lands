@@ -61,11 +61,11 @@ class AppController:
     def _record_match_history(self):
         try:
             from src.match_history import update_history
+            from src.game_review import update_reviews
 
-            update_history(
-                self.app.panel_history._log_paths(),
-                self.orchestrator.scanner.set_data.get_data_by_id,
-            )
+            log_paths = self.app.panel_history._log_paths()
+            history = update_history(log_paths, self.orchestrator.scanner.set_data.get_data_by_id)
+            update_reviews(log_paths, {m["match_id"]: m["event"] for m in history})
         except Exception as e:
             logger.warning(f"Match history recording error: {e}")
 
