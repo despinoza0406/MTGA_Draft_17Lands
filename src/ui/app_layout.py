@@ -19,6 +19,7 @@ from src.ui.windows.custom_deck import CustomDeckPanel
 from src.ui.windows.compare import ComparePanel
 from src.ui.windows.download import DownloadWindow
 from src.ui.windows.tier_list_panel import TierListWindow
+from src.ui.windows.match_history_panel import MatchHistoryPanel
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,9 @@ class AppLayoutManager:
         self.panel_tiers = TierListWindow(
             self.notebook, self.config, self.app._refresh_ui_data
         )
+        self.panel_history = MatchHistoryPanel(
+            self.notebook, self.app.orchestrator.scanner, self.config
+        )
 
         self.notebook.add(self.panel_data, text=" Datasets ")
         self.notebook.add(self.panel_taken, text=" Card Pool ")
@@ -154,6 +158,7 @@ class AppLayoutManager:
         self.notebook.add(self.panel_custom, text=" Custom Deck ")
         self.notebook.add(self.panel_compare, text=" Comparisons ")
         self.notebook.add(self.panel_tiers, text=" Tier Lists ")
+        self.notebook.add(self.panel_history, text=" History ")
 
         # Safely trigger dataset UI refreshes if the panel supports it
         self.notebook.bind(
@@ -162,7 +167,11 @@ class AppLayoutManager:
                 self.panel_data.refresh()
                 if hasattr(self.panel_data, "refresh")
                 and "Datasets" in self.notebook.tab(self.notebook.select(), "text")
-                else None
+                else (
+                    self.panel_history.refresh()
+                    if "History" in self.notebook.tab(self.notebook.select(), "text")
+                    else None
+                )
             ),
         )
 

@@ -28,6 +28,7 @@ from src.advisor.simulator import simulate_deck
 
 logger = logging.getLogger(__name__)
 GLOBAL_DECK_CACHE = {}
+MODEL_VARIANT = "🤖 Model Build"
 
 # The safe deck is promoted to the top only when it's competitive; otherwise it
 # is still shown (the user always wants a non-soupy option) but left in place so
@@ -506,6 +507,9 @@ def suggest_deck(
                         else f"Splash {''.join(active_colors[2:])}"
                     )
 
+            if variant_name == MODEL_VARIANT:
+                true_variant_name = MODEL_VARIANT
+
             opt_deck, opt_sb, opt_note = deck, sb, ""
 
             # Generate a strict string signature of the 40-card deck
@@ -628,6 +632,16 @@ def suggest_deck(
                 soup_arch_key,
             )
 
+        model_deck, model_colors = build_variant_model(taken_cards, event_type)
+        if model_deck:
+            process_variant(
+                MODEL_VARIANT,
+                model_deck,
+                get_sideboard(taken_cards, model_deck),
+                model_colors,
+                normalize_color_string("".join(model_colors[:2])) or "All Decks",
+            )
+
         # Incomplete (land-padded) variants are only worth showing when there
         # is almost nothing else to offer.
         if len(all_variants) >= 3:
@@ -677,7 +691,10 @@ def suggest_deck(
                     max_overlap = overlap
 
             cards_diff = 40 - max_overlap
-            keep = True if (is_top_deck or is_best_safe) else False
+            # The model's build is always shown, even when it nearly matches a
+            # heuristic deck: agreement between the two is itself useful.
+            is_model = data.get("label_prefix") == MODEL_VARIANT
+            keep = True if (is_top_deck or is_best_safe or is_model) else False
 
             if not keep:
                 if cards_diff < 3:
@@ -767,6 +784,32 @@ def build_variant_consistency(pool, colors, metrics, tier_data=None):
         spells, non_basic_lands, colors, forced_count=needed_basics
     )
     return stack_cards(spells + non_basic_lands + basics)
+
+
+def build_variant_model(pool, event_type="PremierDraft"):
+    """Deck chosen by the trained deck model (if one exists for the pool's set),
+    with basics from the regular mana base math."""
+    from src.advisor.deck_model import load_deck_model
+
+    sets = [c.get("set") for c in pool if c.get("set")]
+    model = load_deck_model(max(set(sets), key=sets.count), event_type) if sets else None
+    if model is None:
+        return None, []
+
+    chosen = model.build(pool)
+    spells = [c for c in chosen if "Land" not in c.get("types", [])]
+    lands = [c for c in chosen if "Land" in c.get("types", [])]
+    if sum(c.get("count", 1) for c in spells) < 15:
+        return None, []
+
+    colors = get_strict_colors(spells)
+    basics = calculate_dynamic_mana_base(
+        spells,
+        lands,
+        colors,
+        forced_count=40 - sum(c.get("count", 1) for c in chosen),
+    )
+    return stack_cards(chosen + basics), colors
 
 
 def build_variant_greedy(pool, colors, metrics, tier_data=None):

@@ -58,9 +58,23 @@ class AppController:
         finally:
             self.app._loading = False
 
+    def _record_match_history(self):
+        try:
+            from src.match_history import update_history
+
+            update_history(
+                self.app.panel_history._log_paths(),
+                self.orchestrator.scanner.set_data.get_data_by_id,
+            )
+        except Exception as e:
+            logger.warning(f"Match history recording error: {e}")
+
     def execute_deep_sync(self):
         """Phase 2: Population of heavy tabs (Deck Builder, Card Pool)."""
         self.app.vars["status_text"].set("Ready")
+
+        # Arena overwrites its logs on launch; record finished matches early.
+        threading.Thread(target=self._record_match_history, daemon=True).start()
 
         for p in [self.app.panel_taken, self.app.panel_suggest]:
             try:

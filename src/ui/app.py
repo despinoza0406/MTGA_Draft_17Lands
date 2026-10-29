@@ -163,6 +163,10 @@ class DraftApp:
         return self.layout_manager.panel_tiers
 
     @property
+    def panel_history(self):
+        return self.layout_manager.panel_history
+
+    @property
     def tabs_visible(self) -> bool:
         return self.layout_manager.tabs_visible
 
