@@ -88,3 +88,10 @@ class TestPickModel:
         write_model(tmp_path / "FRA_PremierDraft_pick_model.npz")
         first = load_pick_model("FRA", "PremierDraft", str(tmp_path))
         assert first is load_pick_model("FRA", "PremierDraft", str(tmp_path))
+
+
+def test_equivalent_pick_follows_cards_left(tmp_path):
+    model = PickModel(write_model(tmp_path / "m.npz"))
+    assert model.equivalent_pick(1, 14) == 1
+    assert model.equivalent_pick(2, 12) == 3  # Pick Two: 2nd pick sees 12 cards
+    assert model.equivalent_pick(2, 20) == 2  # bigger than the trained pack: keep pick

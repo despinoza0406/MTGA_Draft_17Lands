@@ -68,11 +68,11 @@ class Settings(BaseModel):
 
     column_configs: Dict[str, List[str]] = Field(
         default_factory=lambda: {
-            "pack_table": ["name", "value", "gihwr"],
+            "pack_table": ["name", "value", "model", "gihwr"],
             "missing_table": ["name", "alsa"],
             "taken_table": ["name", "count", "gihwr"],
             "compare_table": ["name", "gihwr", "iwd"],
-            "overlay_table": ["name", "value", "gihwr"],
+            "overlay_table": ["name", "value", "model", "gihwr"],
             "overlay_pool_table": ["name", "count", "gihwr"],
         }
     )

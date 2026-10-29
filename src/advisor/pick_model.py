@@ -47,10 +47,19 @@ class PickModel:
         pos = (max(1, pack) - 1) * self.picks_per_pack + (max(1, pick) - 1)
         return min(pos, self.pos_emb.shape[0] - 1)
 
+    def equivalent_pick(self, pick: int, pack_size: int) -> int:
+        """Pick number a one-card-per-pick draft would be at with this many cards
+        left, so formats that take two cards per pick (Pick Two) line up with the
+        Premier Draft data the model learned from."""
+        if 0 < pack_size <= self.picks_per_pack:
+            return self.picks_per_pack - pack_size + 1
+        return pick
+
     def score_pack(
         self, pack_cards: List[Dict], taken_cards: List[Dict], pack: int, pick: int
     ) -> Dict[str, float]:
         """Returns {card name: pick probability in %} for the cards the model knows."""
+        pick = self.equivalent_pick(pick, len(pack_cards))
         pack_idx = {}
         for card in pack_cards:
             name = card.get(constants.DATA_FIELD_NAME, "")

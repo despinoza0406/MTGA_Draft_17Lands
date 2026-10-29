@@ -78,3 +78,42 @@ def test_summary_lists_biggest_disagreements_first():
 def test_empty_history():
     assert review_draft(FixedModel([]), [], [card("Ace")], lookup) == []
     assert summarize([])["agreement"] == 0.0
+
+
+def test_pick_two_reviews_both_cards_of_each_pick():
+    """Pick Two takes two cards per pick; packs shrink by two between picks."""
+    model = FixedModel(["Ace", "Bolt", "Cat", "Duck"])
+    history = [
+        {"Pack": 1, "Pick": 1, "Cards": [1, 2, 3, 4]},
+        {"Pack": 1, "Pick": 2, "Cards": [3, 4]},
+    ]
+    taken = [card("Ace"), card("Cat"), card("Duck"), card("Cat")]
+    reviews = review_draft(model, history, taken, lookup)
+
+    assert [(r.pick, r.picked, r.model_pick) for r in reviews] == [
+        (1, "Ace", "Ace"),
+        (1, "Cat", "Bolt"),  # model's second card was Bolt, which you passed
+        (2, "Cat", "Cat"),
+        (2, "Duck", "Duck"),
+    ]
+    assert model.pools == [[], ["Ace", "Cat"]]
+
+
+def test_history_starting_mid_draft_lines_up_by_pick_number():
+    model = FixedModel(["Ace", "Bolt", "Cat", "Duck"])
+    history = [{"Pack": 1, "Pick": 3, "Cards": [3, 4]}]  # picks 1-2 were never recorded
+    taken = [card("Ace"), card("Bolt"), card("Duck")]
+    reviews = review_draft(model, history, taken, lookup)
+
+    assert [(r.pick, r.picked) for r in reviews] == [(3, "Duck")]
+    assert model.pools == [["Ace", "Bolt"]]
+
+
+def test_cards_per_pick_detection():
+    from src.advisor.draft_review import cards_per_pick
+
+    premier = [{"Pack": 1, "Pick": p, "Cards": list(range(15 - p))} for p in (1, 2, 3)]
+    pick_two = [{"Pack": 1, "Pick": p, "Cards": list(range(16 - 2 * p))} for p in (1, 2, 3)]
+    assert cards_per_pick(premier) == 1
+    assert cards_per_pick(pick_two) == 2
+    assert cards_per_pick([]) == 1
