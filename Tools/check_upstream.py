@@ -4,8 +4,12 @@ Checks whether the original repository (remote "upstream") has changes this
 branch does not, and whether they merge cleanly and keep the tests green.
 Nothing in your checkout changes: the trial merge runs in a temporary worktree.
 
+With --merge-if-clean the upstream changes are merged into the current branch,
+but only when the trial merge had no conflicts, the tests passed there, and the
+checkout has no uncommitted changes. Nothing is ever pushed.
+
 Usage:
-    python Tools/check_upstream.py [--report report.txt] [--python <interpreter for pytest>]
+    python Tools/check_upstream.py [--report report.txt] [--python <interpreter>] [--merge-if-clean]
 """
 
 import argparse
@@ -27,7 +31,7 @@ def git(*args, cwd=REPO, check=True):
     return result
 
 
-def check(python: str) -> list:
+def check(python: str, merge_if_clean: bool = False) -> list:
     lines = [f"Upstream check {datetime.datetime.now():%Y-%m-%d %H:%M}"]
     git("fetch", "--quiet", "upstream")
     branch = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
@@ -60,7 +64,13 @@ def check(python: str) -> list:
         summary = (tests.stdout.strip().splitlines() or ["(no pytest output)"])[-1]
         if tests.returncode == 0:
             lines += ["", f"VERDICT: merges cleanly and tests pass ({summary})."]
-            lines.append(f"To bring it in: git merge {UPSTREAM}")
+            if not merge_if_clean:
+                lines.append(f"To bring it in: git merge {UPSTREAM}")
+            elif git("status", "--porcelain").stdout.strip():
+                lines.append("Not merged: your checkout has uncommitted changes.")
+            else:
+                git("merge", "--no-edit", UPSTREAM)
+                lines.append(f"MERGED into {branch} (local only, not pushed): {git('rev-parse', '--short', 'HEAD').stdout.strip()}")
         else:
             failed = [l for l in tests.stdout.splitlines() if l.startswith("FAILED")]
             lines += ["", f"VERDICT: merges cleanly but tests fail ({summary}):"]
@@ -76,9 +86,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--report", help="Also write the report to this file")
     parser.add_argument("--python", default=sys.executable, help="Interpreter used to run the tests")
+    parser.add_argument("--merge-if-clean", action="store_true", help="Merge when the trial merge is clean and green")
     args = parser.parse_args()
 
-    report = "\n".join(check(args.python))
+    report = "\n".join(check(args.python, args.merge_if_clean))
     print(report)
     if args.report:
         with open(args.report, "w", encoding="utf-8") as f:
