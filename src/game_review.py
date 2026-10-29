@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 REVIEWS_FILE = os.path.join(constants.BASE_DIR, "Game_Reviews.json")
 MIN_BENCHMARK_GAMES = 300
 # Bump when GameLog gains fields, so stored games are re-recorded from the logs.
-RECORD_VERSION = 4
+RECORD_VERSION = 5
 LIFE_SWING_FOR_REMOVAL_CHECK = 4
 
 
@@ -112,6 +112,8 @@ class GameLog:
     deck: List[int] = field(default_factory=list)
     card_stats: Dict[int, List[int]] = field(default_factory=dict)  # your cards: grpId -> [power, toughness]
     turns: List[TurnLog] = field(default_factory=list)
+    # Replay: per turn {"turn", "active", "start", "end", "events", "combat"} (see GameRecorder._snapshot)
+    timeline: List[Dict] = field(default_factory=list)
 
     @property
     def key(self) -> str:
@@ -135,6 +137,7 @@ class GameRecorder(GameTracker):
         self.turn_number = 0
         self.active_seat = None
         self.lives: Dict[int, int] = {}
+        self.attachments: Dict[int, tuple] = {}  # annotation id -> (aura instance, host instance)
         self._mulligan_prompts = 0
 
     # --- helpers over the tracked state ---
@@ -165,6 +168,7 @@ class GameRecorder(GameTracker):
             self.current = GameLog(self.game_key[0], self.game_key[1], deck=list(self.deck.elements()))
             self.games.append(self.current)
             self.turn_number, self._mulligan_prompts = 0, 0
+            self.attachments = {}
         if not self.current:
             return
         if message.get("type") == "GREMessageType_ConnectResp" and self.deck:
@@ -206,6 +210,10 @@ class GameRecorder(GameTracker):
                 self.current.opening_hand = [o["grpId"] for o in hand]
                 self.current.opening_hand_lands = sum(_is_type(o, "Land") for o in hand)
             self.current.turns.append(TurnLog(number, self.active_seat == self.seat, life_start=self._life(self.seat)))
+            self.current.timeline.append(
+                {"turn": number, "active": "you" if self.active_seat == self.seat else "opp",
+                 "start": None, "end": None, "events": [], "combat": None}
+            )
 
         turn = self._turn()
         if not turn:
@@ -227,6 +235,98 @@ class GameRecorder(GameTracker):
                     turn.spells_cast.append(obj.get("grpId"))
 
         self._snapshot_turn(turn, turn_info)
+        self._record_replay(state, turn_info)
+
+    # --- replay ---
+    REPLAY_EVENTS = {
+        "CastSpell": "cast", "PlayLand": "land", "Draw": "draw", "Destroy": "died", "SBA_Damage": "died",
+        "SBA_ZeroToughness": "died", "SBA_ZeroLoyalty": "died", "Sacrifice": "sacrificed", "Exile": "exiled",
+        "Return": "returned to hand", "Countered": "countered", "Discard": "discarded", "Mill": "milled",
+    }
+
+    def _who(self, seat) -> str:
+        return "you" if seat == self.seat else "opp"
+
+    def _snapshot(self) -> Dict:
+        opp = self._opponent()
+        attached_to = {aura: target for aura, target in self.attachments.values()}
+
+        def entry(o):
+            host = self.objects.get(attached_to.get(o["instanceId"]), {})
+            return [o["grpId"], (o.get("power") or {}).get("value"), (o.get("toughness") or {}).get("value"),
+                    bool(o.get("isTapped")), (o.get("loyalty") or {}).get("value"), host.get("grpId")]
+
+        def board(seat, lands):
+            return [entry(o) for o in self._battlefield(seat) if _is_type(o, "Land") == lands]
+
+        def zone_ids(kind, seat):
+            return [o["grpId"] for o in self._zone_objects(kind, seat)]
+
+        def zone_count(kind, seat):
+            return sum(len(z.get("objectInstanceIds", [])) for z in self.zones.values()
+                       if z.get("type") == kind and z.get("ownerSeatId") == seat)
+
+        return {
+            "life": [self._life(self.seat), self._life(opp)],
+            "hand": zone_ids("ZoneType_Hand", self.seat),
+            "my_board": board(self.seat, False),
+            "opp_board": board(opp, False),
+            "my_lands": board(self.seat, True),
+            "opp_lands": board(opp, True),
+            "my_graveyard": zone_ids("ZoneType_Graveyard", self.seat),
+            "opp_graveyard": zone_ids("ZoneType_Graveyard", opp),
+            "library": zone_count("ZoneType_Library", self.seat),
+            "opp_hand": zone_count("ZoneType_Hand", opp),
+        }
+
+    def _record_replay(self, state: Dict, turn_info: Dict):
+        if not self.current.timeline or self.seat is None:
+            return
+        step = self.current.timeline[-1]
+        # Auras/equipment: persistent "Attachment" annotations (aura instance -> host instance)
+        for annotation in state.get("persistentAnnotations", []):
+            if "AnnotationType_Attachment" in annotation.get("type", []) and annotation.get("affectedIds"):
+                self.attachments[annotation["id"]] = (annotation.get("affectorId"), annotation["affectedIds"][0])
+        for deleted in state.get("diffDeletedPersistentAnnotationIds", []):
+            self.attachments.pop(deleted, None)
+        for annotation in state.get("annotations", []):
+            types = annotation.get("type", [])
+            details = {d["key"]: (d.get("valueString") or d.get("valueInt32") or [None])[0]
+                       for d in annotation.get("details", [])}
+            if "AnnotationType_ZoneTransfer" in types:
+                kind = self.REPLAY_EVENTS.get(details.get("category"))
+                for affected in annotation.get("affectedIds", []):
+                    obj = self.objects.get(affected, {})
+                    if kind and obj.get("type") == "GameObjectType_Card":
+                        if kind == "draw" and obj.get("ownerSeatId") != self.seat:
+                            continue  # the opponent's draws are hidden
+                        step["events"].append([kind, self._who(obj.get("ownerSeatId")), obj.get("grpId")])
+            elif "AnnotationType_DamageDealt" in types and details.get("damage"):
+                source = self.objects.get(annotation.get("affectorId"), {})
+                for target in annotation.get("affectedIds", []):
+                    if target in (1, 2):
+                        where = self._who(target)
+                    else:
+                        where = self.objects.get(target, {}).get("grpId")
+                    if source.get("grpId") and where is not None:
+                        step["events"].append(["damage", self._who(source.get("controllerSeatId")),
+                                               source["grpId"], where, details["damage"]])
+
+        if turn_info.get("step") in ("Step_DeclareBlock", "Step_CombatDamage", "Step_FirstStrikeDamage"):
+            attackers = [o for o in self.objects.values() if str(o.get("attackState", "")).endswith("Attacking")]
+            if attackers:
+                blocks = [
+                    [o["grpId"], [self.objects[i]["grpId"] for i in (o.get("blockInfo") or {}).get("attackerIds", [])
+                                  if i in self.objects]]
+                    for o in self.objects.values() if o.get("blockState") == "BlockState_Blocking"
+                ]
+                step["combat"] = {"attackers": [[self._who(o.get("controllerSeatId")), o["grpId"]] for o in attackers],
+                                  "blocks": blocks}
+
+        snapshot = self._snapshot()
+        if step["start"] is None and turn_info.get("phase") in ("Phase_Main1", "Phase_Combat", "Phase_Main2"):
+            step["start"] = snapshot
+        step["end"] = snapshot
 
     def _life(self, seat) -> Optional[int]:
         return self.lives.get(seat)

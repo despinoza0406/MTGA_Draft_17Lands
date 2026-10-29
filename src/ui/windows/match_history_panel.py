@@ -91,6 +91,7 @@ class MatchHistoryPanel(ttk.Frame):
             self.games_table.column(col, width=Theme.scaled_val(width), stretch=col == "event")
         self.games_table.pack(fill="both", expand=True)
         self.games_table.bind("<<TreeviewSelect>>", self._show_review)
+        self.games_table.bind("<Double-1>", lambda e: self._open_replay())
 
         right = ttk.Frame(panes, padding=Theme.scaled_val((8, 0, 0, 0)))
         panes.add(right, weight=1)
@@ -104,6 +105,9 @@ class MatchHistoryPanel(ttk.Frame):
         top.pack(fill="x")
         ttk.Label(top, text="FINDINGS (after the game, from your logs)", font=Theme.scaled_font(9, "bold")).pack(side="left")
         ttk.Button(top, text="Copy summary", bootstyle="info-outline", command=self._copy_summary).pack(side="right")
+        ttk.Button(top, text="▶ Replay", bootstyle="success-outline", command=self._open_replay).pack(
+            side="right", padx=Theme.scaled_val(5)
+        )
         self.txt_review = tkinter.Text(
             right, wrap="word", height=18, font=Theme.scaled_font(9), relief="flat", borderwidth=0
         )
@@ -215,6 +219,18 @@ class MatchHistoryPanel(ttk.Frame):
             lines.append(f"{LEVEL_ICONS.get(f.level, '•')} {where}: {f.text}")
         lines += ["", "⚠️ = worth a second look, not necessarily a mistake."]
         self._set_text(self.txt_review, "\n".join(lines))
+
+    def _open_replay(self):
+        selected = self._selected()
+        if not selected:
+            return
+        from src.ui.windows.game_replay import GameReplayWindow
+
+        game, findings = selected
+        data = self.draft.set_data
+        GameReplayWindow(
+            self.winfo_toplevel(), game, findings, data.get_data_by_id, getattr(data, "_resolve_unknown_id", None)
+        )
 
     def _copy_summary(self):
         selected = self._selected()
