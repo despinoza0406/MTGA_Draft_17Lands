@@ -282,3 +282,29 @@ def test_risky_attack_into_a_crack_back():
     assert any(f.kind == "Risky attack" for f in review_game(game([risky]), lookup))
     safe = TurnLog(9, True, lands_played=1, attackers=2, eligible_attackers=2, life_end=20, opponent_power=10)
     assert not any(f.kind == "Risky attack" for f in review_game(game([safe]), lookup))
+
+
+def test_weaker_card_cast_first_and_flash_is_instant_speed():
+    cards = {
+        "10": {"name": "Bomb", "types": ["Planeswalker"], "cmc": 5, "mana_cost": "{3}{B}{B}",
+               "deck_colors": {"All Decks": {"gihwr": 65.9}}},
+        "11": {"name": "Filler", "types": ["Creature"], "cmc": 5, "mana_cost": "{4}{U}",
+               "deck_colors": {"All Decks": {"gihwr": 55.0}}},
+        "12": {"name": "Flasher", "types": ["Creature"], "cmc": 1, "mana_cost": "{U}", "keywords": ["Flash"],
+               "deck_colors": {"All Decks": {"gihwr": 53.0}}},
+    }
+
+    def lk(ids):
+        return [cards[i] for i in ids if i in cards]
+
+    turn = TurnLog(9, True, lands_played=1, spells_cast=[11], end_hand=[10, 12], lands_on_battlefield=5,
+                   land_colors=["B", "B", "U", "U", "U"], end_untapped_lands=1, end_untapped_colors=["U"])
+    findings = review_game(game([turn, TurnLog(10, False)]), lk)
+    weaker = [f for f in findings if f.kind == "Weaker card cast first"]
+    assert len(weaker) == 1 and "Bomb" in weaker[0].text and "Filler" in weaker[0].text
+    # Flasher (flash) with mana open is a deliberate hold, not unused mana
+    assert not any(f.kind in ("Unused mana", "Unused mana held for instants") and "Flasher" in f.text for f in findings)
+
+    no_colors = TurnLog(9, True, lands_played=1, spells_cast=[11], end_hand=[10], lands_on_battlefield=5,
+                        land_colors=["U"] * 5)
+    assert not any(f.kind == "Weaker card cast first" for f in review_game(game([no_colors]), lk))

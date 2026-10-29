@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 REVIEWS_FILE = os.path.join(constants.BASE_DIR, "Game_Reviews.json")
 MIN_BENCHMARK_GAMES = 300
 # Bump when GameLog gains fields, so stored games are re-recorded from the logs.
-RECORD_VERSION = 2
+RECORD_VERSION = 3
 LIFE_SWING_FOR_REMOVAL_CHECK = 4
 
 
@@ -60,6 +60,14 @@ def can_pay(mana_cost: str, cmc: float, sources: List[str]) -> bool:
     return True
 
 
+def _instant_speed(card: Dict) -> bool:
+    return "Instant" in card.get("types", []) or "Flash" in (card.get("keywords") or [])
+
+
+def _gihwr(card: Dict) -> float:
+    return float(card.get("deck_colors", {}).get("All Decks", {}).get("gihwr", 0.0) or 0.0)
+
+
 def _is_counterspell(card: Dict) -> bool:
     text = str(card.get("oracle_text", card.get("text", ""))).lower()
     return "counter target" in text
@@ -75,6 +83,7 @@ class TurnLog:
     end_hand_lands: int = 0
     end_untapped_lands: int = 0
     end_untapped_colors: List[str] = field(default_factory=list)
+    land_colors: List[str] = field(default_factory=list)  # all your lands at end of turn
     lands_on_battlefield: int = 0
     eligible_attackers: int = 0
     opponent_blockers: int = 0
@@ -244,6 +253,7 @@ class GameRecorder(GameTracker):
             turn.end_hand_lands = sum(_is_type(o, "Land") for o in hand)
             lands = [o for o in mine_bf if _is_type(o, "Land")]
             turn.lands_on_battlefield = len(lands)
+            turn.land_colors = [_land_colors(o) for o in lands]
             untapped = [o for o in lands if not o.get("isTapped")]
             turn.end_untapped_lands = len(untapped)
             turn.end_untapped_colors = [_land_colors(o) for o in untapped]
@@ -310,6 +320,7 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
     findings = _mulligan_findings(game, benchmarks)
     my_turns = [t for t in game.turns if t.mine]
     held_turns: Dict[int, int] = {}  # creature grpId -> consecutive turns held while castable
+    prioritized = set()  # cards already flagged by the prioritization check
     for index, turn in enumerate(my_turns, start=1):
         if turn.lands_played == 0 and turn.end_hand_lands > 0:
             findings.append(Finding(turn.number, "review", "No land played, but you had a land in hand.", "Missed land drop"))
@@ -323,10 +334,10 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
 
         castable = [
             g for g in turn.end_hand
-            if "Land" not in card(g).get("types", []) and "Instant" not in card(g).get("types", []) and payable(g)
+            if "Land" not in card(g).get("types", []) and not _instant_speed(card(g)) and payable(g)
         ]
-        # Mana left open for an instant you could cast is often deliberate.
-        held_up = [g for g in turn.end_hand if "Instant" in card(g).get("types", []) and payable(g)]
+        # Mana left open for an instant (or flash card) you could cast is often deliberate.
+        held_up = [g for g in turn.end_hand if _instant_speed(card(g)) and payable(g)]
         following = next((t for t in game.turns if t.number == turn.number + 1 and not t.mine), None)
         if castable and held_up and following is not None and not following.spells_cast:
             findings.append(
@@ -353,7 +364,8 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
         # Creatures kept in hand with the mana to cast them, even when that mana
         # stayed open for instants: in Limited, developing usually beats holding up.
         castable_creatures = {
-            g for g in turn.end_hand if "Creature" in card(g).get("types", []) and payable(g)
+            g for g in turn.end_hand
+            if "Creature" in card(g).get("types", []) and not _instant_speed(card(g)) and payable(g)
         }
         held_turns = {g: held_turns.get(g, 0) + 1 for g in castable_creatures}
         for g, held in held_turns.items():
@@ -368,6 +380,38 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
                         "Held a castable creature",
                     )
                 )
+
+        # Prioritization: you spent at least as much mana on weaker cards as a
+        # clearly better card in hand would have cost, and your lands could pay for it.
+        cast_here = [g for g in turn.spells_cast if card(g)]
+        spent = sum(float(card(g).get("cmc", 0) or 0) for g in cast_here)
+        best_cast = max((_gihwr(card(g)) for g in cast_here), default=None)
+        all_lands = turn.land_colors or [""] * turn.lands_on_battlefield
+        if best_cast is not None:
+            better = [
+                g for g in set(turn.end_hand)
+                if g not in prioritized
+                and "Land" not in card(g).get("types", [])
+                and not _instant_speed(card(g))
+                and 0 < float(card(g).get("cmc", 0) or 0) <= spent
+                and _gihwr(card(g)) >= best_cast + PRIORITY_GAP
+                and can_pay(card(g).get("mana_cost", ""), float(card(g).get("cmc", 0) or 0), all_lands)
+            ]
+            if better:
+                g = max(better, key=lambda x: _gihwr(card(x)))
+                c = card(g)
+                if True:
+                    prioritized.add(g)
+                    cast_names = ", ".join(name(x) for x in cast_here)
+                    findings.append(
+                        Finding(
+                            turn.number,
+                            "review",
+                            f"Cast {cast_names} while {name(g)} (GIH {_gihwr(c):.1f}% vs {best_cast:.1f}%) stayed in hand "
+                            f"and your lands could pay for it. Play your best card first.",
+                            "Weaker card cast first",
+                        )
+                    )
 
         if turn.attackers > 0 and turn.life_end is not None and turn.opponent_power + CRACK_BACK_MARGIN >= turn.life_end:
             findings.append(
@@ -442,6 +486,7 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
 LOW_MANA_USE = 0.6
 HELD_CREATURE_TURNS = 2
 CRACK_BACK_MARGIN = 3  # pump spells, counters and tricks on the opponent's turn
+PRIORITY_GAP = 4.0  # GIH WR points that make a card "clearly better"
 LIMITED_DECK_SIZE = (38, 45)
 BEHIND_POWER_GAP = 4
 BIG_HIT = 6
