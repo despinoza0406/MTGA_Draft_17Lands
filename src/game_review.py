@@ -531,7 +531,8 @@ def _priority_context(game: GameLog, turn: TurnLog, held: int, cast: List[int], 
                                 f"check whether {card(held).get('name')} would have stabilized better.")
         if not _is_defensive(held_card) and any(_is_defensive(card(g)) for g in cast):
             return "info", f"{board} Under pressure, deploying defense first can be right."
-        return "review", f"{board} Even under pressure, this card looked like the stronger play."
+        return "review", (f"{board} Even under pressure it rated higher: check which of its effects "
+                          f"(and on which target) would have answered the threats on board.")
     return "review", f"{board} Play your best card first unless you were setting up a double spell.".strip()
 HELD_CREATURE_TURNS = 2
 CRACK_BACK_MARGIN = 3  # pump spells, counters and tricks on the opponent's turn
