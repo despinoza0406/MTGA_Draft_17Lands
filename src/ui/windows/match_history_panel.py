@@ -18,6 +18,7 @@ from src.game_review import (
     review_game,
     game_summary_text,
     load_benchmarks,
+    patterns,
 )
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,12 @@ class MatchHistoryPanel(ttk.Frame):
 
         right = ttk.Frame(panes, padding=Theme.scaled_val((8, 0, 0, 0)))
         panes.add(right, weight=1)
+        ttk.Label(right, text="PATTERNS (your Limited games)", font=Theme.scaled_font(9, "bold")).pack(anchor="w")
+        self.txt_patterns = tkinter.Text(
+            right, wrap="word", height=9, font=Theme.scaled_font(9), relief="flat", borderwidth=0
+        )
+        self.txt_patterns.pack(fill="x", pady=Theme.scaled_val((4, 8)))
+        self.txt_patterns.configure(state="disabled")
         top = ttk.Frame(right)
         top.pack(fill="x")
         ttk.Label(top, text="FINDINGS (after the game, from your logs)", font=Theme.scaled_font(9, "bold")).pack(side="left")
@@ -107,12 +114,13 @@ class MatchHistoryPanel(ttk.Frame):
 
     def _apply_text_colors(self):
         # Plain tk.Text ignores ttk themes; paint it with the active palette.
-        self.txt_review.configure(
-            background=Theme.BG_TERTIARY,
-            foreground=Theme.TEXT_MAIN,
-            insertbackground=Theme.TEXT_MAIN,
-            selectbackground=Theme.ACCENT,
-        )
+        for text in (self.txt_review, self.txt_patterns):
+            text.configure(
+                background=Theme.BG_TERTIARY,
+                foreground=Theme.TEXT_MAIN,
+                insertbackground=Theme.TEXT_MAIN,
+                selectbackground=Theme.ACCENT,
+            )
 
     def refresh(self):
         lookup = self.draft.set_data.get_data_by_id
@@ -178,6 +186,17 @@ class MatchHistoryPanel(ttk.Frame):
                 ),
             )
 
+        limited = [(g, f) for g, f in self._games if any(h in g.event for h in LIMITED_HINTS)]
+        lines = patterns(limited, lookup) or ["No Limited games recorded yet."]
+        self._set_text(self.txt_patterns, "\n".join(f"• {line}" for line in lines))
+
+    @staticmethod
+    def _set_text(widget, text):
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", text)
+        widget.configure(state="disabled")
+
     def _selected(self):
         selection = self.games_table.selection()
         return self._games[int(selection[0])] if selection else None
@@ -192,13 +211,10 @@ class MatchHistoryPanel(ttk.Frame):
         if not findings:
             lines.append("Nothing flagged.")
         for f in findings:
-            where = "Mulligan" if f.turn == 0 else f"Turn {f.turn}"
+            where = "Game" if f.turn == 0 else f"Turn {f.turn}"
             lines.append(f"{LEVEL_ICONS.get(f.level, '•')} {where}: {f.text}")
         lines += ["", "⚠️ = worth a second look, not necessarily a mistake."]
-        self.txt_review.configure(state="normal")
-        self.txt_review.delete("1.0", "end")
-        self.txt_review.insert("1.0", "\n".join(lines))
-        self.txt_review.configure(state="disabled")
+        self._set_text(self.txt_review, "\n".join(lines))
 
     def _copy_summary(self):
         selected = self._selected()

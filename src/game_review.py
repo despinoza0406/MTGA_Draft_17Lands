@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 REVIEWS_FILE = os.path.join(constants.BASE_DIR, "Game_Reviews.json")
 MIN_BENCHMARK_GAMES = 300
+# Bump when GameLog gains fields, so stored games are re-recorded from the logs.
+RECORD_VERSION = 2
 LIFE_SWING_FOR_REMOVAL_CHECK = 4
 
 
@@ -78,6 +80,10 @@ class TurnLog:
     opponent_blockers: int = 0
     opponent_creatures: int = 0
     attackers: int = 0
+    # Board at the end of this turn (either player's turn)
+    my_creatures: int = 0
+    my_power: int = 0
+    opponent_power: int = 0
     life_start: Optional[int] = None
     life_end: Optional[int] = None
     opponent_life_end: Optional[int] = None
@@ -94,6 +100,7 @@ class GameLog:
     opening_hand: List[int] = field(default_factory=list)
     opening_hand_lands: Optional[int] = None
     won: Optional[bool] = None
+    deck: List[int] = field(default_factory=list)
     turns: List[TurnLog] = field(default_factory=list)
 
     @property
@@ -102,6 +109,7 @@ class GameLog:
 
     @staticmethod
     def from_dict(data: Dict) -> "GameLog":
+        data = {k: v for k, v in data.items() if k != "version"}
         turns = [TurnLog(**t) for t in data.get("turns", [])]
         return GameLog(**{**data, "turns": turns})
 
@@ -143,11 +151,13 @@ class GameRecorder(GameTracker):
         before = self.game_key
         super()._handle(message)
         if self.game_key and self.game_key != before:
-            self.current = GameLog(self.game_key[0], self.game_key[1])
+            self.current = GameLog(self.game_key[0], self.game_key[1], deck=list(self.deck.elements()))
             self.games.append(self.current)
             self.turn_number, self._mulligan_prompts = 0, 0
         if not self.current:
             return
+        if message.get("type") == "GREMessageType_ConnectResp" and self.deck:
+            self.current.deck = list(self.deck.elements())  # sideboarded deck for this game
 
         if message.get("type") == "GREMessageType_MulliganReq":
             if self._mulligan_prompts == 0:
@@ -208,11 +218,17 @@ class GameRecorder(GameTracker):
         opp = self._opponent()
         turn.life_end = self._life(self.seat)
         turn.opponent_life_end = self._life(opp)
-        if not turn.mine:
-            return
         step, phase = turn_info.get("step"), turn_info.get("phase")
         mine_bf = self._battlefield(self.seat)
         opp_bf = self._battlefield(opp) if opp else []
+        if phase in ("Phase_Main2", "Phase_Ending") or step == "Step_End":
+            mine_c = [o for o in mine_bf if _is_type(o, "Creature")]
+            opp_c = [o for o in opp_bf if _is_type(o, "Creature")]
+            turn.my_creatures, turn.opponent_creatures = len(mine_c), len(opp_c)
+            turn.my_power = sum((o.get("power") or {}).get("value", 0) for o in mine_c)
+            turn.opponent_power = sum((o.get("power") or {}).get("value", 0) for o in opp_c)
+        if not turn.mine:
+            return
         if step == "Step_BeginCombat":
             turn.eligible_attackers = sum(
                 1 for o in mine_bf
@@ -231,7 +247,6 @@ class GameRecorder(GameTracker):
             untapped = [o for o in lands if not o.get("isTapped")]
             turn.end_untapped_lands = len(untapped)
             turn.end_untapped_colors = [_land_colors(o) for o in untapped]
-            turn.opponent_creatures = sum(1 for o in opp_bf if _is_type(o, "Creature"))
 
 
 def record_games(log_text: str) -> List[GameLog]:
@@ -249,6 +264,7 @@ class Finding:
     turn: int
     level: str  # "ok", "review", "info"
     text: str
+    kind: str = ""  # short label used to group flags across games
 
 
 def _rate(cell: Optional[Dict]):
@@ -271,7 +287,7 @@ def _mulligan_findings(game: GameLog, benchmarks: Optional[Dict]) -> List[Findin
                 f"Kept 7 with {game.opening_hand_lands} lands on the {side}: such keeps win {keep:.0%} "
                 f"vs {after_mull:.0%} after a mulligan (17Lands, {games:,} games; rough guide, the spells matter too)."
             )
-            out.append(Finding(0, "ok" if keep >= after_mull else "review", text))
+            out.append(Finding(0, "ok" if keep >= after_mull else "review", text, "Risky keep"))
         elif games:
             out.append(Finding(0, "info", f"Kept 7 with {game.opening_hand_lands} lands: too few 17Lands games ({games}) to judge."))
     elif game.mulligans > 0 and game.first_hand_lands is not None:
@@ -281,18 +297,12 @@ def _mulligan_findings(game: GameLog, benchmarks: Optional[Dict]) -> List[Findin
                 f"Mulliganed a 7 with {game.first_hand_lands} lands on the {side}: keeping such hands wins "
                 f"{keep:.0%}, mulliganing {after_mull:.0%} (17Lands; rough guide, the spells matter too)."
             )
-            out.append(Finding(0, "review" if keep > after_mull + 0.05 else "ok", text))
+            out.append(Finding(0, "review" if keep > after_mull + 0.05 else "ok", text, "Mulliganed a keepable 7"))
     return out
 
 
 def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchmarks: Optional[Dict] = None) -> List[Finding]:
-    cards = {}
-
-    def card(grp_id) -> Dict:
-        if grp_id not in cards:
-            found = lookup([str(grp_id)])
-            cards[grp_id] = found[0] if found else {}
-        return cards[grp_id]
+    card = _card_cache(lookup)
 
     def name(grp_id) -> str:
         return card(grp_id).get(constants.DATA_FIELD_NAME) or f"#{grp_id}"
@@ -301,7 +311,7 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
     my_turns = [t for t in game.turns if t.mine]
     for index, turn in enumerate(my_turns, start=1):
         if turn.lands_played == 0 and turn.end_hand_lands > 0:
-            findings.append(Finding(turn.number, "review", "No land played, but you had a land in hand."))
+            findings.append(Finding(turn.number, "review", "No land played, but you had a land in hand.", "Missed land drop"))
 
         sources = turn.end_untapped_colors or [""] * turn.end_untapped_lands
 
@@ -324,12 +334,13 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
                     "review",
                     f"Ended your turn with {turn.end_untapped_lands} untapped lands while holding "
                     f"{name(best)} (cost {card(best).get('cmc')}). Unused mana, if you had the colors.",
+                    "Unused mana",
                 )
             )
 
         if turn.eligible_attackers > 0 and turn.opponent_blockers == 0 and turn.attackers == 0:
             findings.append(
-                Finding(turn.number, "review", f"Opponent had no untapped blockers and you didn't attack with {turn.eligible_attackers} creature(s).")
+                Finding(turn.number, "review", f"Opponent had no untapped blockers and you didn't attack with {turn.eligible_attackers} creature(s).", "No attack into an empty board")
             )
 
         removal = [
@@ -346,6 +357,7 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
                             turn.number,
                             "review",
                             f"Held {name(removal[0])} with mana up, then took {lost} damage next turn. Worth using it earlier?",
+                            "Held removal",
                         )
                     )
 
@@ -357,7 +369,171 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
     first_spell = next((t.number for t in my_turns if t.spells_cast), None)
     if first_spell:
         findings.append(Finding(first_spell, "info", f"First spell on turn {first_spell} (your turn {my_turns.index(next(t for t in my_turns if t.number == first_spell)) + 1})."))
+
+    efficiency = mana_efficiency(game, card)
+    if efficiency is not None:
+        level = "review" if efficiency < LOW_MANA_USE else "ok"
+        findings.append(
+            Finding(0, level, f"Used {efficiency:.0%} of your available mana on your turns 2-6 "
+                              f"(spells cast in your turn or the opponent's next turn).", "Low mana use")
+        )
+
+    behind = first_turn_behind(game)
+    if behind:
+        findings.append(
+            Finding(behind.number, "review",
+                    f"Behind on board: {behind.my_creatures} creature(s) / {behind.my_power} power vs "
+                    f"{behind.opponent_creatures} / {behind.opponent_power}. What could have been deployed earlier?",
+                    "Behind on board")
+        )
+
+    swing = biggest_hit(game)
+    if swing:
+        turn, lost = swing
+        findings.append(Finding(turn, "info", f"Biggest hit: you lost {lost} life on turn {turn}. Look at how the board got there."))
+
+    findings += deck_findings(game, card, benchmarks)
     return sorted(findings, key=lambda f: f.turn)
+
+
+LOW_MANA_USE = 0.6
+LIMITED_DECK_SIZE = (38, 45)
+BEHIND_POWER_GAP = 4
+BIG_HIT = 6
+
+
+def mana_efficiency(game: GameLog, card) -> Optional[float]:
+    """Mana spent / lands available over your turns 2-6. Spells you cast in the
+    opponent's following turn (instants, flash) count toward your turn."""
+    spent = available = 0.0
+    my_turns = [t for t in game.turns if t.mine][1:6]
+    for turn in my_turns:
+        following = next((t for t in game.turns if t.number == turn.number + 1 and not t.mine), None)
+        cast = turn.spells_cast + (following.spells_cast if following else [])
+        spent += sum(float(card(g).get("cmc", 0) or 0) for g in cast)
+        available += turn.lands_on_battlefield
+    return min(1.0, spent / available) if available >= 6 else None
+
+
+def first_turn_behind(game: GameLog) -> Optional[TurnLog]:
+    """First end of turn (by turn 8) where the opponent's board outclasses yours."""
+    for turn in game.turns:
+        if 3 <= turn.number <= 8 and turn.opponent_creatures >= turn.my_creatures + 2 and (
+            turn.opponent_power - turn.my_power >= BEHIND_POWER_GAP
+        ):
+            return turn
+    return None
+
+
+def biggest_hit(game: GameLog):
+    best = None
+    previous = None
+    for turn in game.turns:
+        if previous is not None and not turn.mine and turn.life_end is not None and previous is not None:
+            lost = previous - turn.life_end
+            if lost >= BIG_HIT and (best is None or lost > best[1]):
+                best = (turn.number, lost)
+        if turn.life_end is not None:
+            previous = turn.life_end
+    return best
+
+
+def deck_findings(game: GameLog, card, benchmarks: Optional[Dict]) -> List[Finding]:
+    """Your deck's creature / instant counts next to how such decks do (17Lands)."""
+    tables = (benchmarks or {}).get("deck", {})
+    # Limited decks only: a stale constructed deck from an earlier connect must not be judged.
+    if not tables or not LIMITED_DECK_SIZE[0] <= len(game.deck) <= LIMITED_DECK_SIZE[1]:
+        return []
+    nonland = [g for g in game.deck if card(g) and "Land" not in card(g).get("types", [])]
+    counts = {
+        "creatures": sum("Creature" in card(g).get("types", []) for g in nonland),
+        "instants": sum("Instant" in card(g).get("types", []) for g in nonland),
+    }
+    out = []
+    for kind, count in counts.items():
+        table = tables.get(kind, {})
+        mine, games = _rate(table.get(str(count)))
+        rates = [(int(k), v["wins"] / v["games"]) for k, v in table.items() if v["games"] >= MIN_BENCHMARK_GAMES * 5]
+        if mine is None or games < MIN_BENCHMARK_GAMES or not rates:
+            continue
+        best_k, best = max(rates, key=lambda kv: kv[1])
+        out.append(
+            Finding(0, "info", f"Deck: {count} {kind} — decks like that win {mine:.0%} on 17Lands "
+                               f"(best range ~{best_k}: {best:.0%}).")
+        )
+    return out
+
+
+def _card_cache(lookup):
+    cards = {}
+
+    def card(grp_id) -> Dict:
+        if grp_id not in cards:
+            found = lookup([str(grp_id)])
+            cards[grp_id] = found[0] if found else {}
+        return cards[grp_id]
+
+    return card
+
+
+def patterns(reviews: List, lookup) -> List[str]:
+    """Cross-game patterns over [(GameLog, findings)], plus how much of the
+    record could simply be variance."""
+    games = [(g, f) for g, f in reviews if g.won is not None]
+    if not games:
+        return []
+    wins = sum(g.won for g, _ in games)
+    lines = [f"{len(games)} games: {wins}-{len(games) - wins}."]
+
+    expected = 0.55  # roughly the average 17Lands drafter
+    p_low = _binomial_cdf(wins, len(games), expected)
+    lines.append(
+        f"With a true {expected:.0%} win rate, a record this low or lower happens {p_low:.0%} of the time "
+        f"by luck alone" + (" — too few games to conclude much." if p_low > 0.1 else ".")
+    )
+
+    for side in (True, False):
+        subset = [g for g, _ in games if g.on_play is side]
+        if subset:
+            w = sum(g.won for g in subset)
+            lines.append(f"On the {'play' if side else 'draw'}: {w}-{len(subset) - w}.")
+
+    def avg(values):
+        values = [v for v in values if v is not None]
+        return sum(values) / len(values) if values else None
+
+    card = _card_cache(lookup)
+    eff = {res: avg([mana_efficiency(g, card) for g, _ in games if g.won is res]) for res in (True, False)}
+    if eff[True] is not None and eff[False] is not None:
+        lines.append(f"Mana used on turns 2-6: {eff[True]:.0%} in wins vs {eff[False]:.0%} in losses.")
+
+    length = {res: avg([len(g.turns) for g, _ in games if g.won is res]) for res in (True, False)}
+    if length[True] is not None and length[False] is not None:
+        lines.append(f"Game length: {length[True]:.0f} turns in wins vs {length[False]:.0f} in losses.")
+
+    losses = [(g, fs) for g, fs in games if g.won is False]
+    if losses:
+        behind = sum(any(f.kind == "Behind on board" for f in fs) for _, fs in losses)
+        lines.append(f"Behind on board by turn 8 in {behind} of {len(losses)} losses.")
+        mulls = sum(g.mulligans > 0 for g, _ in losses)
+        if mulls:
+            lines.append(f"Mulliganed in {mulls} of {len(losses)} losses.")
+
+    flags = {}
+    for _, fs in games:
+        for f in fs:
+            if f.level == "review":
+                flags[f.kind or "Other"] = flags.get(f.kind or "Other", 0) + 1
+    if flags:
+        top = sorted(flags.items(), key=lambda kv: -kv[1])[:3]
+        lines.append("Most frequent flags: " + "; ".join(f"{k} ({n})" for k, n in top) + ".")
+    return lines
+
+
+def _binomial_cdf(k: int, n: int, p: float) -> float:
+    from math import comb
+
+    return sum(comb(n, i) * p**i * (1 - p) ** (n - i) for i in range(k + 1))
 
 
 def game_summary_text(game: GameLog, lookup, findings: List[Finding]) -> str:
@@ -412,10 +588,11 @@ def update_reviews(log_paths: List[str], events: Dict[str, str], path: str = REV
         except OSError:
             continue
         for game in games:
-            if game.won is None or game.key in stored:
+            old = stored.get(game.key)
+            if game.won is None or (old and old.get("version") == RECORD_VERSION):
                 continue
-            game.event = events.get(game.match_id, "")
-            stored[game.key] = asdict(game)
+            game.event = events.get(game.match_id, "") or (old or {}).get("event", "")
+            stored[game.key] = {**asdict(game), "version": RECORD_VERSION}
             added += 1
     if added:
         try:

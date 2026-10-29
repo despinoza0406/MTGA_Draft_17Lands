@@ -182,3 +182,79 @@ def test_update_reviews_persists_finished_games_once(tmp_path):
     again = update_reviews([str(log)], {}, str(store))
     assert again["match-1#1"]["event"] == "QuickDraft_FRA_1"
     assert GameLog.from_dict(again["match-1#1"]).turns[0].number == 1
+
+
+# --- board, mana use, deck, patterns ---
+
+from src.game_review import mana_efficiency, first_turn_behind, biggest_hit, deck_findings, patterns, _card_cache
+
+
+def card_fn():
+    return _card_cache(lookup)
+
+
+def test_mana_efficiency_counts_instants_on_the_opponents_turn():
+    turns = []
+    for n in range(1, 13):
+        mine = n % 2 == 1
+        t = TurnLog(n, mine, lands_on_battlefield=(n + 1) // 2 if mine else 0)
+        if mine and n in (3, 5):
+            t.spells_cast = [1]  # Bear, cmc 2
+        if not mine and n == 6:
+            t.spells_cast = [2]  # Shock cast in the opponent's turn 6, cmc 1
+        turns.append(t)
+    g = game(turns)
+    # my turns 2-6 = turns 3,5,7,9,11 with 2,3,4,5,6 lands = 20 available; spent 2+2+1 = 5
+    assert mana_efficiency(g, card_fn()) == 5 / 20
+    assert any(f.kind == "Low mana use" for f in review_game(g, lookup))
+
+
+def test_behind_on_board_and_biggest_hit():
+    turns = [
+        TurnLog(3, True, my_creatures=1, my_power=2, opponent_creatures=1, opponent_power=2, life_end=20),
+        TurnLog(4, False, my_creatures=1, my_power=2, opponent_creatures=3, opponent_power=7, life_end=18),
+        TurnLog(5, True, life_end=18),
+        TurnLog(6, False, life_end=10),
+    ]
+    g = game(turns)
+    assert first_turn_behind(g).number == 4
+    assert biggest_hit(g) == (6, 8)
+
+
+def test_deck_findings_only_for_limited_decks():
+    bench = {"deck": {"creatures": {str(k): {"games": 5000, "wins": 2500 + 100 * (12 - k)} for k in range(8, 17)},
+                      "instants": {}}}
+    limited = game([], deck=[1] * 12 + [3] * 17 + [4] * 11)  # 12 creatures, 40 cards
+    found = deck_findings(limited, card_fn(), bench)
+    assert found and "12 creatures" in found[0].text and "~8" in found[0].text
+
+    constructed = game([], deck=[1] * 24 + [3] * 36)
+    assert deck_findings(constructed, card_fn(), bench) == []
+
+
+def test_patterns_report_variance_sides_and_length():
+    def g(won, on_play, n_turns):
+        return game([TurnLog(i, i % 2 == 1) for i in range(1, n_turns + 1)], won=won, on_play=on_play)
+
+    reviews = [(g(True, True, 10), []), (g(False, False, 20), [])]
+    lines = patterns(reviews, lookup)
+    assert lines[0] == "2 games: 1-1."
+    assert "by luck alone" in lines[1] and "too few games" in lines[1]
+    assert "On the play: 1-0." in lines and "On the draw: 0-1." in lines
+    assert "Game length: 10 turns in wins vs 20 in losses." in lines
+
+
+def test_old_records_are_re_recorded(tmp_path):
+    finished = "\n".join([
+        gre(state(turn={"turnNumber": 1, "activePlayer": ME})),
+        gre(state(stage="GameStage_GameOver", results=[{"scope": "MatchScope_Game", "winningTeamId": ME}])),
+    ])
+    log = tmp_path / "Player.log"
+    log.write_text(finished, encoding="utf-8")
+    store = tmp_path / "reviews.json"
+    store.write_text(json.dumps({"match-1#1": {"match_id": "match-1", "game_number": 1, "event": "QuickDraft_FRA_1", "won": True, "turns": []}}))
+
+    stored = update_reviews([str(log)], {}, str(store))
+    assert stored["match-1#1"]["version"] >= 2
+    assert stored["match-1#1"]["event"] == "QuickDraft_FRA_1"  # kept from the old record
+    assert stored["match-1#1"]["turns"]
