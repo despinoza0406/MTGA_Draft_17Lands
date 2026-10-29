@@ -170,8 +170,8 @@ class TestAppOrchestrator:
             app.root.event_generate("<<ShowDataTab>>")
             app.root.update()
 
-            # Current index should be 0 (Dataset Manager is the first tab now)
-            assert app.notebook.index("current") == 0
+            # The Datasets page is shown (the Draft page comes first in the rail)
+            assert app.notebook.select() == str(app.panel_data)
         finally:
             for p in ui_patches:
                 p.stop()

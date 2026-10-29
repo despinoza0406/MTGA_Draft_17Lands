@@ -30,76 +30,57 @@ class TestAppLayoutManager:
         layout = AppLayoutManager(mock_app)
         layout.build()
 
-        # Verify containers exist
         assert layout.main_container is not None
-        assert layout.splitter is not None
+        assert layout.nav_rail is not None
         assert layout.notebook is not None
         assert layout.dashboard is not None
 
-        # Verify panels are injected into the notebook
-        assert len(layout.notebook.tabs()) == 7
+        # The Draft page plus the seven feature panels, all full-size pages
+        assert len(layout.notebook.tabs()) == 8
+        assert layout.notebook.tabs()[0] == str(layout.dashboard_page)
         assert "History" in layout.notebook.tab(layout.notebook.tabs()[-1], "text")
 
-    def test_toggle_tabs_visibility(self, mock_app):
-        """Verify that clicking 'Hide Tabs' collapses the lower pane correctly."""
+    def test_nav_rail_switches_pages(self, mock_app):
+        """Each rail button shows its page and is marked active."""
         layout = AppLayoutManager(mock_app)
         layout.build()
 
-        assert layout.tabs_visible is True
+        history = str(layout.panel_history)
+        layout.nav_buttons[history].invoke()
+        layout.notebook.update()
+        assert layout.notebook.select() == history
+        assert layout.nav_buttons[history].cget("style") == "NavActive.TButton"
+        assert layout.nav_buttons[str(layout.dashboard_page)].cget("style") == "Nav.TButton"
 
-        # Hide tabs
-        layout.toggle_tabs()
-        assert layout.tabs_visible is False
-        assert "Show Tabs" in layout.btn_toggle_tabs.cget("text")
-
-        # Show tabs again
-        layout.toggle_tabs()
-        assert layout.tabs_visible is True
-        assert "Hide Tabs" in layout.btn_toggle_tabs.cget("text")
-
-    def test_ensure_tabs_visible(self, mock_app):
-        """Verify the defensive method guarantees tabs are shown."""
+    def test_tab_helpers_are_harmless(self, mock_app):
+        """Old callers still work: tabs are always visible in the page layout."""
         layout = AppLayoutManager(mock_app)
         layout.build()
-
-        layout.toggle_tabs()  # Hide them
-        assert layout.tabs_visible is False
-
-        layout.ensure_tabs_visible()  # Force them back
+        layout.toggle_tabs()
+        layout.ensure_tabs_visible()
         assert layout.tabs_visible is True
 
     @patch("src.ui.app_layout.Theme.scaled_val", side_effect=lambda x: x)
     def test_save_and_restore_window_state(self, mock_scale, mock_app):
-        """Verify custom geometries and sash positions are saved and restored."""
+        """Wide geometries are kept; narrow ones from the old layout are widened."""
         layout = AppLayoutManager(mock_app)
         layout.build()
 
-        # Mock the Tkinter state to pretend the window is fully visible and resized
         mock_app.root.state = MagicMock(return_value="normal")
         mock_app.root.geometry = MagicMock(return_value="1400x900+10+10")
-        layout.splitter.sashpos = MagicMock(return_value=600)
-
-        # Simulate saving
         layout.save_window_state()
-        assert "1400x900" in mock_app.configuration.settings.main_window_geometry
-        assert mock_app.configuration.settings.paned_window_sash == 600
+        assert mock_app.configuration.settings.main_window_geometry == "1400x900+10+10"
 
-        # Simulate restoring state on a fresh boot
-        with patch.object(mock_app.root, "after") as mock_after:
+        mock_app.root.geometry = MagicMock()
+        with patch.object(mock_app.root, "after"):
             layout.restore_window_state()
+        mock_app.root.geometry.assert_called_with("1400x900+10+10")
 
-            # The geometry should be applied immediately
-            assert "1400x900" in mock_app.root.geometry()
-
-            # The sash restoration is deferred via `after` to allow Tkinter to render.
-            # We assert that `after` was called with the apply_sashes function.
-            assert mock_after.call_count >= 2
-
-            # Extract and execute the delayed function manually to test it
-            apply_func = mock_after.call_args_list[0][0][1]
-            layout.splitter.sashpos = MagicMock()
-            apply_func()
-            layout.splitter.sashpos.assert_called_with(0, 600)
+        mock_app.configuration.settings.main_window_geometry = "600x1041+52+52"
+        mock_app.root.geometry = MagicMock()
+        with patch.object(mock_app.root, "after"):
+            layout.restore_window_state()
+        mock_app.root.geometry.assert_called_with("1280x860+52+52")
 
     def test_session_info_updates_cleanly(self, mock_app):
         """Verify the bottom metadata text updates correctly and handles None."""

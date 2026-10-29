@@ -36,12 +36,11 @@ class AppLayoutManager:
         # UI Elements registry
         self.main_container = None
         self.top_bar = None
-        self.splitter = None
-        self.top_pane = None
-        self.bottom_pane = None
+        self.nav_rail = None
+        self.nav_buttons = {}
+        self.dashboard_page = None
         self.dashboard = None
         self.tab_controls = None
-        self.btn_toggle_tabs = None
         self.lbl_session_info = None
         self.notebook = None
 
@@ -53,70 +52,133 @@ class AppLayoutManager:
         self.panel_data = None
         self.panel_tiers = None
 
+    # Pages reachable from the left rail: (label, icon, panel attribute).
+    # "dashboard_page" is the live draft view; the rest are the old tabs.
+    NAV_PAGES = [
+        ("Draft", "▦", "dashboard_page"),
+        ("Pool", "▤", "panel_taken"),
+        ("Deck", "☰", "panel_suggest"),
+        ("Custom", "✎", "panel_custom"),
+        ("Compare", "⇄", "panel_compare"),
+        ("Tiers", "★", "panel_tiers"),
+        ("History", "▮", "panel_history"),
+    ]
+
     def build(self):
-        """Constructs the primary shell (TopBar, Dashboard Pane, Tabs Pane)."""
+        """Left navigation rail plus one full-size page at a time.
+
+        There are no splitters between the draft view and the other panels any
+        more: each page takes the whole window, so nothing needs resizing.
+        """
         if self.main_container:
             self.main_container.destroy()
 
-        self.main_container = ttk.Frame(self.root, padding=Theme.scaled_val(8))
+        self.main_container = ttk.Frame(self.root)
         self.main_container.pack(fill="both", expand=True)
+        self.main_container.columnconfigure(1, weight=1)
+        self.main_container.rowconfigure(0, weight=1)
 
-        self.top_bar = TopBarControls(self.main_container, self.app)
-        self.top_bar.pack(fill="x", pady=(0, Theme.scaled_val(10)))
+        self.nav_rail = ttk.Frame(self.main_container, style="Nav.TFrame")
+        self.nav_rail.grid(row=0, column=0, sticky="ns")
+        ttk.Separator(self.main_container, orient="vertical").grid(row=0, column=0, sticky="nse")
 
-        # Main Splitter
-        self.splitter = ttk.PanedWindow(self.main_container, orient=tkinter.VERTICAL)
-        self.splitter.pack(fill="both", expand=True)
+        content = ttk.Frame(self.main_container, padding=Theme.scaled_val((10, 8, 10, 8)))
+        content.grid(row=0, column=1, sticky="nsew")
 
-        self.top_pane = ttk.Frame(self.splitter)
-        self.splitter.add(self.top_pane, weight=4)
+        self.top_bar = TopBarControls(content, self.app)
+        self.top_bar.pack(fill="x", pady=(0, Theme.scaled_val(8)))
 
+        self.notebook = ttk.Notebook(content)
+        self.notebook.pack(fill="both", expand=True)
+
+        self.dashboard_page = ttk.Frame(self.notebook)
         self.dashboard = DashboardFrame(
-            self.top_pane,
+            self.dashboard_page,
             self.config,
             self.app.interactions.on_card_select,
             self.app._refresh_ui_data,
             on_advisor_click=self.app.interactions.show_tooltip_from_advisor,
             on_context_menu=self.app.interactions.on_card_context_menu,
         )
-
-        self.bottom_pane = ttk.Frame(self.splitter)
-        self.splitter.add(self.bottom_pane, weight=2)
-
-        self.tab_controls = ttk.Frame(
-            self.top_pane, padding=Theme.scaled_val((10, 5, 10, 5))
-        )
+        self.tab_controls = ttk.Frame(self.dashboard_page, padding=Theme.scaled_val((4, 4, 4, 0)))
         self.tab_controls.pack(side="bottom", fill="x")
-
-        footer_separator = ttk.Separator(self.top_pane, orient="horizontal")
-        footer_separator.pack(side="bottom", fill="x")
-
-        self.dashboard.pack(side="top", fill="both", expand=True)
-
-        self.btn_toggle_tabs = ttk.Button(
-            self.tab_controls,
-            text="▼ Hide Tabs",
-            bootstyle="secondary-outline",
-            command=self.toggle_tabs,
-            cursor="hand2",
-        )
-        self.btn_toggle_tabs.pack(side="right", padx=Theme.scaled_val(5))
-
         self.lbl_session_info = ttk.Label(
             self.tab_controls,
-            font=Theme.scaled_font(9),
+            font=Theme.scaled_font(8),
             bootstyle="secondary",
             anchor="w",
         )
-        self.lbl_session_info.pack(
-            side="left", fill="x", expand=True, padx=Theme.scaled_val(5)
-        )
-
-        # Tabs
-        self.notebook = ttk.Notebook(self.bottom_pane)
-        self.notebook.pack(fill="both", expand=True)
+        self.lbl_session_info.pack(side="left", fill="x", expand=True)
+        self.dashboard.pack(side="top", fill="both", expand=True)
 
         self._build_panels()
+        self._build_nav()
+        self._style_pages()
+        Theme.bind_theme_change(self.main_container, lambda e: self._style_pages())
+
+    def _style_pages(self):
+        """Hide the notebook's own tabs (the rail replaces them) and paint the rail."""
+        style = ttk.Style()
+        style.layout("Pages.TNotebook.Tab", [])
+        bg = Theme.BG_PRIMARY
+        style.configure(
+            "Pages.TNotebook", borderwidth=0, tabmargins=0, padding=0,
+            background=bg, bordercolor=bg, lightcolor=bg, darkcolor=bg,
+        )
+        # ttkbootstrap rewrites a style= keyword to its own TNotebook style, so
+        # set it straight on the Tk widget.
+        self.root.tk.call(self.notebook._w, "configure", "-style", "Pages.TNotebook")
+        hover = Theme.ARENA["raised"] if Theme.is_arena() else Theme.BG_SECONDARY
+        style.configure("Nav.TFrame", background=bg)
+        for name, fg, back in (
+            ("Nav.TButton", Theme.TEXT_MUTED, bg),
+            ("NavActive.TButton", Theme.TEXT_MAIN, hover),
+        ):
+            style.configure(
+                name, background=back, foreground=fg, borderwidth=0, relief="flat",
+                bordercolor=back, lightcolor=back, darkcolor=back, focuscolor=back,
+                justify="center", padding=Theme.scaled_val((4, 8)),
+                font=Theme.scaled_font(8, "bold"),
+            )
+            style.map(name, background=[("active", hover)], foreground=[("active", Theme.TEXT_MAIN)])
+        if self.nav_buttons:
+            self._sync_nav()
+
+    def _build_nav(self):
+        ttk.Label(
+            self.nav_rail, text="17L", font=Theme.display_font(15),
+            foreground=Theme.ARENA["gold"] if Theme.is_arena() else Theme.ACCENT,
+        ).pack(pady=Theme.scaled_val((12, 10)))
+        self.nav_buttons = {}
+        for label, icon, attr in self.NAV_PAGES:
+            page = getattr(self, attr)
+            btn = self._nav_button(f"{icon}\n{label.upper()}", lambda p=page: self.notebook.select(p))
+            self.nav_buttons[str(page)] = btn
+        ttk.Frame(self.nav_rail, style="Nav.TFrame").pack(fill="both", expand=True)
+        self._nav_button("▩\nGRADES", self.app._open_grades)
+        self._nav_button("◎\nTRACKER", self.app._open_match_tracker)
+        data_btn = self._nav_button("⚙\nDATA", lambda: self.notebook.select(self.panel_data))
+        self.nav_buttons[str(self.panel_data)] = data_btn
+        ttk.Frame(self.nav_rail, style="Nav.TFrame", height=Theme.scaled_val(8)).pack()
+        self.notebook.bind("<<NotebookTabChanged>>", lambda e: self._sync_nav(), add="+")
+        self._sync_nav()
+
+    def _nav_button(self, text, command):
+        btn = ttk.Button(
+            self.nav_rail, text=text, width=9,
+            takefocus=False, cursor="hand2", command=command,
+        )
+        btn.configure(style="Nav.TButton")  # a style= keyword is rewritten by ttkbootstrap
+        btn.pack(fill="x")
+        return btn
+
+    def _sync_nav(self):
+        try:
+            current = self.notebook.select()
+        except tkinter.TclError:
+            return
+        for page, btn in self.nav_buttons.items():
+            btn.configure(style="NavActive.TButton" if page == current else "Nav.TButton")
 
     def _build_panels(self):
         """Constructs and injects the individual feature panels into the notebook."""
@@ -152,6 +214,7 @@ class AppLayoutManager:
             self.notebook, self.app.orchestrator.scanner, self.config
         )
 
+        self.notebook.add(self.dashboard_page, text=" Draft ")
         self.notebook.add(self.panel_data, text=" Datasets ")
         self.notebook.add(self.panel_taken, text=" Card Pool ")
         self.notebook.add(self.panel_suggest, text=" Deck Builder ")
@@ -176,18 +239,10 @@ class AppLayoutManager:
         )
 
     def toggle_tabs(self):
-        if self.tabs_visible:
-            self.splitter.forget(self.bottom_pane)
-            self.btn_toggle_tabs.config(text="▲ Show Tabs")
-            self.tabs_visible = False
-        else:
-            self.splitter.add(self.bottom_pane, weight=2)
-            self.btn_toggle_tabs.config(text="▼ Hide Tabs")
-            self.tabs_visible = True
+        """Kept for callers of the old split layout; every page is full size now."""
 
     def ensure_tabs_visible(self):
-        if not self.tabs_visible:
-            self.toggle_tabs()
+        pass
 
     def update_session_info(self, event_name, draft_id, start_time):
         """Displays technical metadata silently in the footer."""
@@ -200,35 +255,19 @@ class AppLayoutManager:
         """Applies user's saved window dimensions and layouts on startup."""
         try:
             geom = self.config.settings.main_window_geometry
-            if geom and "x" in geom and not geom.startswith("1x1"):
+            width = int(geom.split("x")[0]) if geom and "x" in geom else 0
+            if width >= Theme.scaled_val(1000):
                 self.root.geometry(geom)
+            elif geom and "+" in geom and width > 1:
+                # Saved from the old narrow stacked layout: widen, keep position.
+                pos = geom[geom.index("+"):]
+                self.root.geometry(f"{Theme.scaled_val(1280)}x{Theme.scaled_val(860)}{pos}")
             else:
                 self.root.geometry(f"{Theme.scaled_val(1200)}x{Theme.scaled_val(800)}")
 
             self.root.update_idletasks()
 
-            def apply_sashes():
-                try:
-                    sash_pos = self.config.settings.paned_window_sash
-                    if sash_pos > Theme.scaled_val(50) and self.tabs_visible:
-                        self.splitter.sashpos(0, sash_pos)
-
-                    dash_sash = getattr(
-                        self.config.settings, "dashboard_sash", Theme.scaled_val(800)
-                    )
-                    if dash_sash > Theme.scaled_val(50) and hasattr(
-                        self.dashboard, "h_splitter"
-                    ):
-                        curr_w = self.dashboard.winfo_width()
-                        if curr_w > Theme.scaled_val(200):
-                            safe_sash = min(dash_sash, curr_w - Theme.scaled_val(280))
-                            if safe_sash > Theme.scaled_val(50):
-                                self.dashboard.h_splitter.sashpos(0, safe_sash)
-                except Exception:
-                    pass
-
-            self.root.after(100, apply_sashes)
-            self.root.after(500, apply_sashes)
+            self.root.after(100, self.dashboard.auto_fit_sidebar)
 
         except Exception as e:
             logger.warning(f"Failed to apply window preferences: {e}")
@@ -238,13 +277,4 @@ class AppLayoutManager:
         if self.root.state() == "normal":
             self.config.settings.main_window_geometry = self.root.geometry()
 
-        try:
-            if self.tabs_visible:
-                self.config.settings.paned_window_sash = self.splitter.sashpos(0)
-            if hasattr(self, "dashboard") and hasattr(self.dashboard, "h_splitter"):
-                if self.dashboard.sidebar_visible:
-                    self.config.settings.dashboard_sash = (
-                        self.dashboard.h_splitter.sashpos(0)
-                    )
-        except Exception:
-            pass
+        # Sash positions are no longer saved: the layout sizes itself.

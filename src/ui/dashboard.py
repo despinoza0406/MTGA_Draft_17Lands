@@ -293,6 +293,7 @@ class DashboardFrame(ttk.Frame):
         self.h_splitter = ttk.PanedWindow(self.content_frame, orient=tkinter.HORIZONTAL)
         self.h_splitter.grid(row=0, column=0, sticky="nsew")
         self.h_splitter.bind("<ButtonRelease-1>", self._on_sash_drag_end)
+        self.h_splitter.bind("<Configure>", lambda e: self.auto_fit_sidebar(), add="+")
 
         # --- LEFT: Tables ---
         self.f_left = ttk.Frame(self.h_splitter)
@@ -575,24 +576,7 @@ class DashboardFrame(ttk.Frame):
 
                 if was_content_hidden and self.sidebar_visible:
 
-                    def fix_sash():
-                        try:
-                            curr_w = self.winfo_width()
-                            if curr_w > 200:
-                                dash_sash = getattr(
-                                    self.configuration.settings,
-                                    "dashboard_sash",
-                                    Theme.scaled_val(800),
-                                )
-                                safe_sash = min(
-                                    dash_sash, curr_w - Theme.scaled_val(280)
-                                )
-                                if safe_sash > Theme.scaled_val(50):
-                                    self.h_splitter.sashpos(0, safe_sash)
-                        except Exception:
-                            pass
-
-                    self.after(50, fix_sash)
+                    self.after(50, self.auto_fit_sidebar)
         else:
             if self._current_event_set:
                 self.lbl_waiting_title.config(
@@ -874,6 +858,23 @@ class DashboardFrame(ttk.Frame):
         if hasattr(self, "advisor_panel"):
             self.advisor_panel.update_recommendations(recs)
 
+    SIDEBAR_SHARE = 0.28
+
+    def auto_fit_sidebar(self):
+        """Give the sidebar ~28% of the width (300-420px); the pack table gets the rest."""
+        if not getattr(self, "sidebar_visible", False) or not hasattr(self, "h_splitter"):
+            return
+        try:
+            width = self.h_splitter.winfo_width()
+            if width < Theme.scaled_val(400):
+                return
+            side = min(Theme.scaled_val(420), max(Theme.scaled_val(300), int(width * self.SIDEBAR_SHARE)))
+            target = width - side
+            if abs(self.h_splitter.sashpos(0) - target) > 2:
+                self.h_splitter.sashpos(0, target)
+        except tkinter.TclError:
+            pass
+
     def _on_sash_drag_end(self, event):
         try:
             self.configuration.settings.dashboard_sash = self.h_splitter.sashpos(0)
@@ -889,22 +890,7 @@ class DashboardFrame(ttk.Frame):
 
             self.update_idletasks()
 
-            current_width = self.winfo_width()
-            default_sash = (
-                max(Theme.scaled_val(50), current_width - Theme.scaled_val(280))
-                if current_width > Theme.scaled_val(280)
-                else Theme.scaled_val(800)
-            )
-
-            dash_sash = getattr(
-                self.configuration.settings, "dashboard_sash", default_sash
-            )
-            if dash_sash < Theme.scaled_val(
-                50
-            ) or dash_sash >= current_width - Theme.scaled_val(20):
-                dash_sash = default_sash
-
-            self.h_splitter.sashpos(0, dash_sash)
+            self.auto_fit_sidebar()
         else:
             try:
                 self.configuration.settings.dashboard_sash = self.h_splitter.sashpos(0)
