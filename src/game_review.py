@@ -60,8 +60,45 @@ def can_pay(mana_cost: str, cmc: float, sources: List[str]) -> bool:
     return True
 
 
+_RULES_BY_SET: Dict[str, Dict[str, Dict]] = {}
+
+
+def _rules(card: Dict) -> Dict:
+    """oracle_text and keywords for a card.
+
+    Custom 17Lands dumps carry ratings but no rules text, which hid counterspells
+    and Flash from the review. Borrow both from another dataset of the same set.
+    """
+    if card.get("oracle_text"):
+        return card
+    code = card.get("set")
+    if not code:
+        return card
+    if code not in _RULES_BY_SET:
+        index = {}
+        folder = constants.SETS_FOLDER
+        files = sorted(f for f in os.listdir(folder) if f.startswith(f"{code}_") and f.endswith(constants.SET_FILE_SUFFIX)) if os.path.isdir(folder) else []
+        for f in files:
+            try:
+                with open(os.path.join(folder, f), encoding="utf-8") as fh:
+                    ratings = json.load(fh).get("card_ratings", {})
+            except Exception:
+                continue
+            for c in ratings.values():
+                if c.get("oracle_text") and c.get("name") not in index:
+                    index[c["name"]] = {"oracle_text": c["oracle_text"], "keywords": c.get("keywords") or []}
+            if index:
+                break
+        _RULES_BY_SET[code] = index
+    return _RULES_BY_SET[code].get(card.get(constants.DATA_FIELD_NAME), card)
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
 def _instant_speed(card: Dict) -> bool:
-    return "Instant" in card.get("types", []) or "Flash" in (card.get("keywords") or [])
+    return "Instant" in card.get("types", []) or "Flash" in (_rules(card).get("keywords") or [])
 
 
 def _gihwr(card: Dict) -> float:
@@ -69,7 +106,8 @@ def _gihwr(card: Dict) -> float:
 
 
 def _is_counterspell(card: Dict) -> bool:
-    text = str(card.get("oracle_text", card.get("text", ""))).lower()
+    rules = _rules(card)
+    text = str(rules.get("oracle_text", card.get("text", ""))).lower()
     return "counter target" in text
 
 
@@ -463,8 +501,9 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
                 Finding(
                     turn.number,
                     "review",
-                    f"Ended your turn with {turn.end_untapped_lands} untapped lands while holding "
-                    f"{name(best)} (cost {card(best).get('cmc')}). Unused mana, if you had the colors.",
+                    f"Ended your turn with {_plural(turn.end_untapped_lands, 'untapped land')} while "
+                    f"{name(best)} (mana value {card(best).get('cmc')}) sat in hand. That mana went unused, "
+                    f"unless those lands couldn't make its colors.",
                     "Unused mana",
                 )
             )
@@ -484,7 +523,7 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
                         "review",
                         f"Held {name(g)} for {held} turns with the mana to cast it"
                         + (" (kept mana open for instants instead)" if held_up else "")
-                        + ". Deploying threats on curve usually beats holding counters in Limited.",
+                        + ". In Limited, playing threats on curve usually beats holding up instants.",
                         "Held a castable creature",
                     )
                 )
@@ -511,12 +550,13 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
                 verdict = _priority_context(game, turn, g, cast_here, card)
                 if verdict:
                     level, context = verdict
-                    cast_names = ", ".join(name(x) for x in cast_here)
+                    # Each win rate sits next to its own card so the comparison reads one way.
+                    cast_names = ", ".join(f"{name(x)} ({_gihwr(card(x)):.1f}% GIH)" for x in cast_here)
                     findings.append(
                         Finding(
                             turn.number,
                             level,
-                            f"Cast {cast_names} while {name(g)} (GIH {_gihwr(card(g)):.1f}% vs {best_cast:.1f}%) stayed in hand "
+                            f"Cast {cast_names} while {name(g)} ({_gihwr(card(g)):.1f}% GIH) stayed in hand "
                             f"and your lands could pay for it. {context}",
                             "Weaker card cast first",
                         )
@@ -527,16 +567,17 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
                 Finding(
                     turn.number,
                     "review",
-                    f"Attacked with {turn.attackers} creature(s) while the opponent had {turn.opponent_power} power "
-                    f"on board and you were at {turn.life_end} life (pump and counters add more). "
-                    f"Did you keep enough blockers for the crack-back?",
+                    f"Attacked with {_plural(turn.attackers, 'creature')} while the opponent had {turn.opponent_power} power "
+                    f"on board and you were at {turn.life_end} life (pump spells and counters add more). "
+                    f"Did you keep enough blockers for their swing back?",
                     "Risky attack",
                 )
             )
 
         if turn.eligible_attackers > 0 and turn.opponent_blockers == 0 and turn.attackers == 0:
             findings.append(
-                Finding(turn.number, "review", f"Opponent had no untapped blockers and you didn't attack with {turn.eligible_attackers} creature(s).", "No attack into an empty board")
+                Finding(turn.number, "review", f"The opponent had no untapped blockers, but you didn't attack with your "
+                        f"{_plural(turn.eligible_attackers, 'creature')} that could attack.", "No attack into an empty board")
             )
 
         removal = [
@@ -578,8 +619,9 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
     if behind:
         findings.append(
             Finding(behind.number, "review",
-                    f"Behind on board: {behind.my_creatures} creature(s) / {behind.my_power} power vs "
-                    f"{behind.opponent_creatures} / {behind.opponent_power}. What could have been deployed earlier?",
+                    f"Behind on board: you had {_plural(behind.my_creatures, 'creature')} ({behind.my_power} power), "
+                    f"the opponent {_plural(behind.opponent_creatures, 'creature')} ({behind.opponent_power} power). "
+                    f"What could you have played earlier?",
                     "Behind on board")
         )
 
@@ -650,6 +692,10 @@ def mana_efficiency(game: GameLog, card) -> Optional[float]:
     for turn in my_turns:
         following = next((t for t in game.turns if t.number == turn.number + 1 and not t.mine), None)
         cast = turn.spells_cast + (following.spells_cast if following else [])
+        # Cards outside the loaded set (Ladder decks) resolve by name but carry
+        # no cost; counting them as free reported "0% mana used".
+        if any(not card(g).get("mana_cost") and not float(card(g).get("cmc", 0) or 0) for g in cast):
+            return None
         spent += sum(float(card(g).get("cmc", 0) or 0) for g in cast)
         available += turn.lands_on_battlefield
     return min(1.0, spent / available) if available >= 6 else None

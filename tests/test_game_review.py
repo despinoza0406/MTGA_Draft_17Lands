@@ -302,6 +302,11 @@ def test_weaker_card_cast_first_and_flash_is_instant_speed():
     findings = review_game(game([turn, TurnLog(10, False)]), lk)
     weaker = [f for f in findings if f.kind == "Weaker card cast first"]
     assert len(weaker) == 1 and "Bomb" in weaker[0].text and "Filler" in weaker[0].text
+    # Each win rate sits right after its own card, so the comparison can't read backwards
+    import re
+    pairs = dict(re.findall(r"(Bomb|Filler) \(([\d.]+)% GIH\)", weaker[0].text))
+    assert float(pairs["Bomb"]) > float(pairs["Filler"])
+    assert weaker[0].text.index("Filler") < weaker[0].text.index("Bomb")  # cast first, held second
     # Flasher (flash) with mana open is a deliberate hold, not unused mana
     assert not any(f.kind in ("Unused mana", "Unused mana held for instants") and "Flasher" in f.text for f in findings)
 
@@ -369,3 +374,40 @@ def test_life_diff_series_and_key_cards():
     rated = {"1": 55.0, "2": 61.0, "3": 50.0, "9": 70.0}
     lookup = lambda ids: [{"name": f"c{ids[0]}", "deck_colors": {"All Decks": {"gihwr": rated[ids[0]]}}}]
     assert [c["name"] for c in key_cards(game, lookup)] == ["c2", "c1", "c3"]
+
+
+def test_mana_efficiency_skips_cards_with_unknown_cost():
+    from src.game_review import GameLog, TurnLog, mana_efficiency
+
+    turns = [TurnLog(number=n, mine=n % 2 == 1, lands_on_battlefield=(n + 1) // 2, spells_cast=[1] if n % 2 else [])
+             for n in range(1, 13)]
+    game = GameLog(match_id="m", game_number=1, turns=turns)
+    known = {"1": {"name": "Bear", "cmc": 2, "mana_cost": "{1}{G}", "types": ["Creature"]}}
+    assert mana_efficiency(game, lambda g: known[str(g)]) is not None
+    # A Ladder card the loaded set doesn't know: no cost, so no claim about mana use
+    unknown = lambda g: {"name": "Veteran Survivor", "cmc": 0, "mana_cost": "", "types": []}
+    assert mana_efficiency(game, unknown) is None
+
+
+def test_rules_text_borrowed_from_another_dataset(tmp_path, monkeypatch):
+    import json
+    from src import constants, game_review
+
+    full = {"card_ratings": {"1": {"name": "Countersculpt", "oracle_text": "Counter target spell.", "keywords": []},
+                             "2": {"name": "Yuriko", "oracle_text": "Flash", "keywords": ["Flash"]}}}
+    (tmp_path / "ZZZ_PremierDraft_All_Data.json").write_text(json.dumps(full), encoding="utf-8")
+    monkeypatch.setattr(constants, "SETS_FOLDER", str(tmp_path))
+    monkeypatch.setattr(game_review, "_RULES_BY_SET", {})
+
+    custom = {"name": "Countersculpt", "set": "ZZZ", "types": ["Instant"], "tags": ["removal"]}
+    assert game_review._is_counterspell(custom)
+    assert game_review._instant_speed({"name": "Yuriko", "set": "ZZZ", "types": ["Creature"]})
+    assert not game_review._instant_speed({"name": "Bear", "set": "ZZZ", "types": ["Creature"]})
+
+
+def test_messages_read_naturally():
+    from src.game_review import _plural
+
+    assert _plural(1, "creature") == "1 creature"
+    assert _plural(0, "creature") == "0 creatures"
+    assert _plural(2, "untapped land") == "2 untapped lands"
