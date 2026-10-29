@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 REVIEWS_FILE = os.path.join(constants.BASE_DIR, "Game_Reviews.json")
 MIN_BENCHMARK_GAMES = 300
 # Bump when GameLog gains fields, so stored games are re-recorded from the logs.
-RECORD_VERSION = 3
+RECORD_VERSION = 4
 LIFE_SWING_FOR_REMOVAL_CHECK = 4
 
 
@@ -110,6 +110,7 @@ class GameLog:
     opening_hand_lands: Optional[int] = None
     won: Optional[bool] = None
     deck: List[int] = field(default_factory=list)
+    card_stats: Dict[int, List[int]] = field(default_factory=dict)  # your cards: grpId -> [power, toughness]
     turns: List[TurnLog] = field(default_factory=list)
 
     @property
@@ -120,7 +121,8 @@ class GameLog:
     def from_dict(data: Dict) -> "GameLog":
         data = {k: v for k, v in data.items() if k != "version"}
         turns = [TurnLog(**t) for t in data.get("turns", [])]
-        return GameLog(**{**data, "turns": turns})
+        stats = {int(k): v for k, v in (data.get("card_stats") or {}).items()}  # JSON keys are strings
+        return GameLog(**{**data, "turns": turns, "card_stats": stats})
 
 
 class GameRecorder(GameTracker):
@@ -181,7 +183,13 @@ class GameRecorder(GameTracker):
         if not state:
             return
         for player in state.get("players", []):
-            self.lives[player.get("systemSeatNumber")] = player.get("lifeTotal")
+            if "lifeTotal" in player:
+                self.lives[player.get("systemSeatNumber")] = player["lifeTotal"]
+        for obj in state.get("gameObjects", []):
+            if obj.get("ownerSeatId") == self.seat and "toughness" in obj and obj.get("type") == "GameObjectType_Card":
+                self.current.card_stats.setdefault(
+                    obj["grpId"], [(obj.get("power") or {}).get("value", 0), (obj.get("toughness") or {}).get("value", 0)]
+                )
         info = state.get("gameInfo") or {}
         for result in info.get("results", []):
             if result.get("scope") == "MatchScope_Game" and result.get("winningTeamId") is not None:
@@ -399,16 +407,17 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
             ]
             if better:
                 g = max(better, key=lambda x: _gihwr(card(x)))
-                c = card(g)
-                if True:
-                    prioritized.add(g)
+                prioritized.add(g)
+                verdict = _priority_context(game, turn, g, cast_here, card)
+                if verdict:
+                    level, context = verdict
                     cast_names = ", ".join(name(x) for x in cast_here)
                     findings.append(
                         Finding(
                             turn.number,
-                            "review",
-                            f"Cast {cast_names} while {name(g)} (GIH {_gihwr(c):.1f}% vs {best_cast:.1f}%) stayed in hand "
-                            f"and your lands could pay for it. Play your best card first.",
+                            level,
+                            f"Cast {cast_names} while {name(g)} (GIH {_gihwr(card(g)):.1f}% vs {best_cast:.1f}%) stayed in hand "
+                            f"and your lands could pay for it. {context}",
                             "Weaker card cast first",
                         )
                     )
@@ -484,6 +493,46 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
 
 
 LOW_MANA_USE = 0.6
+PRESSURE_POWER_GAP = 3
+PRESSURE_LIFE = 10
+
+
+def _is_defensive(c: Dict) -> bool:
+    return "Creature" in c.get("types", []) or "removal" in c.get("tags", [])
+
+
+def _priority_context(game: GameLog, turn: TurnLog, held: int, cast: List[int], card):
+    """Decides how to report a stronger card left in hand, given the board and
+    what you did next turn. Returns (level, explanation) or None to stay quiet."""
+    # Planned double spell: you cast it on your next turn and used (almost) all your mana.
+    later = [t for t in game.turns if t.mine and t.number > turn.number]
+    if later and held in later[0].spells_cast:
+        spent = sum(float(card(g).get("cmc", 0) or 0) for g in later[0].spells_cast)
+        if spent >= later[0].lands_on_battlefield - 1:
+            return None
+
+    before = next((t for t in reversed(game.turns) if t.number < turn.number and not t.mine), None)
+    life = turn.life_start if turn.life_start is not None else (before.life_end if before else None)
+    board = ""
+    pressure = False
+    if before:
+        board = f"Board before your turn: you {before.my_power} power vs opponent {before.opponent_power}" + (
+            f", you at {life} life." if life is not None else ".")
+        pressure = before.opponent_power - before.my_power >= PRESSURE_POWER_GAP or (life is not None and life <= PRESSURE_LIFE)
+
+    if pressure:
+        held_card = card(held)
+        cast_creatures = [g for g in cast if "Creature" in card(g).get("types", [])]
+        if "Creature" in held_card.get("types", []) and cast_creatures:
+            held_toughness = game.card_stats.get(held, [0, 0])[1]
+            best_toughness = max(game.card_stats.get(g, [0, 0])[1] for g in cast_creatures)
+            if len(cast_creatures) > 1 or best_toughness >= held_toughness:
+                return "info", (f"{board} Under pressure, sturdier or more blockers can be the right call; "
+                                f"check whether {card(held).get('name')} would have stabilized better.")
+        if not _is_defensive(held_card) and any(_is_defensive(card(g)) for g in cast):
+            return "info", f"{board} Under pressure, deploying defense first can be right."
+        return "review", f"{board} Even under pressure, this card looked like the stronger play."
+    return "review", f"{board} Play your best card first unless you were setting up a double spell.".strip()
 HELD_CREATURE_TURNS = 2
 CRACK_BACK_MARGIN = 3  # pump spells, counters and tricks on the opponent's turn
 PRIORITY_GAP = 4.0  # GIH WR points that make a card "clearly better"

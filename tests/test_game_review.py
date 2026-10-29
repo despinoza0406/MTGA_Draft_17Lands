@@ -308,3 +308,48 @@ def test_weaker_card_cast_first_and_flash_is_instant_speed():
     no_colors = TurnLog(9, True, lands_played=1, spells_cast=[11], end_hand=[10], lands_on_battlefield=5,
                         land_colors=["U"] * 5)
     assert not any(f.kind == "Weaker card cast first" for f in review_game(game([no_colors]), lk))
+
+
+PRIORITY_CARDS = {
+    "20": {"name": "Big Flyer", "types": ["Creature"], "cmc": 3, "mana_cost": "{1}{U}{U}",
+           "deck_colors": {"All Decks": {"gihwr": 61.0}}},
+    "21": {"name": "Wall", "types": ["Creature"], "cmc": 5, "mana_cost": "{4}{U}",
+           "deck_colors": {"All Decks": {"gihwr": 55.0}}},
+    "22": {"name": "Draw Spell", "types": ["Sorcery"], "cmc": 3, "mana_cost": "{2}{U}",
+           "deck_colors": {"All Decks": {"gihwr": 55.0}}},
+}
+
+
+def plk(ids):
+    return [PRIORITY_CARDS[i] for i in ids if i in PRIORITY_CARDS]
+
+
+def priority_turns(opp_power, cast, later_cast=()):
+    return [
+        TurnLog(9, False, my_power=0, opponent_power=opp_power, life_end=15),
+        TurnLog(10, True, lands_played=1, spells_cast=list(cast), end_hand=[20], lands_on_battlefield=5,
+                land_colors=["U"] * 5, life_start=15),
+        TurnLog(11, False),
+        TurnLog(12, True, lands_played=1, spells_cast=list(later_cast), lands_on_battlefield=6, land_colors=["U"] * 6),
+    ]
+
+
+def weaker(findings):
+    return [f for f in findings if f.kind == "Weaker card cast first"]
+
+
+def test_priority_under_pressure_with_a_sturdier_blocker_is_info():
+    g = game(priority_turns(opp_power=6, cast=[21]), card_stats={20: [3, 3], 21: [3, 5]})
+    found = weaker(review_game(g, plk))
+    assert len(found) == 1 and found[0].level == "info" and "you 0 power vs opponent 6" in found[0].text
+
+
+def test_priority_without_pressure_is_review():
+    g = game(priority_turns(opp_power=0, cast=[21]), card_stats={20: [3, 3], 21: [3, 5]})
+    found = weaker(review_game(g, plk))
+    assert len(found) == 1 and found[0].level == "review"
+
+
+def test_priority_skips_a_planned_double_spell():
+    g = game(priority_turns(opp_power=0, cast=[22, 21], later_cast=[20, 22]), card_stats={20: [3, 3]})
+    assert weaker(review_game(g, plk)) == []
