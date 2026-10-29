@@ -267,6 +267,16 @@ class DraftApp:
         )
         self._refresh_ui_data()
 
+    def _open_match_tracker(self):
+        if getattr(self, "match_tracker_window", None):
+            self.match_tracker_window.lift()
+            return
+        from src.ui.windows.match_tracker import MatchTrackerWindow
+
+        self.match_tracker_window = MatchTrackerWindow(
+            self.root, self, lambda: setattr(self, "match_tracker_window", None)
+        )
+
     def _disable_overlay(self):
         if self.overlay_window:
             self.overlay_window.destroy()
