@@ -6,11 +6,16 @@ the deck model (training/deck_model), and installs both into the tool's Models
 folder.
 
 Usage:
-    python training/pick_model/update.py <SET> --tool-dir C:/MtgaDraftTool [--event PremierDraft] [--data-dir data]
+    python training/pick_model/update.py [<SET>] --tool-dir C:/MtgaDraftTool [--event PremierDraft] [--data-dir data]
+
+Without <SET>, the set of your most recent draft (the newest DraftLog_<SET>_*.log
+in the tool's Logs folder) is used, so the script can run unattended.
 """
 
 import argparse
+import glob
 import importlib.util
+import json
 import os
 import shutil
 import requests
@@ -53,9 +58,24 @@ def download_if_changed(url: str, path: str) -> bool:
     return True
 
 
+def active_set(tool_dir):
+    """Set of the most recent draft log ('DraftLog_FRA_QuickDraft_<id>.log' -> 'FRA'),
+    falling back to the dataset selected in the tool's config."""
+    logs = glob.glob(os.path.join(tool_dir, "Logs", "DraftLog_*_*.log"))
+    if logs:
+        return os.path.basename(max(logs, key=os.path.getmtime)).split("_")[1]
+    path = os.path.join(os.getenv("APPDATA", ""), "MTGA_Draft_Tool", "config.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            latest = json.load(f).get("card_data", {}).get("latest_dataset", "")
+    except (OSError, ValueError):
+        latest = ""
+    return latest.split("_")[0] if latest else None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("set", help="Set code, e.g. FRA")
+    parser.add_argument("set", nargs="?", help="Set code, e.g. FRA (default: the tool's active set)")
     parser.add_argument("--event", default="PremierDraft")
     parser.add_argument("--tool-dir", required=True, help="Folder with the tool's Sets/ and Models/")
     parser.add_argument("--data-dir", default="data", help="Where the 17Lands dump and arrays are kept")
@@ -63,7 +83,10 @@ def main():
     parser.add_argument("--keep-arrays", action="store_true", help="Keep the prepared arrays (~1.5 GB)")
     args = parser.parse_args()
 
-    set_code = args.set.upper()
+    set_code = (args.set or active_set(args.tool_dir) or "").upper()
+    if not set_code:
+        raise SystemExit("No set given and no draft logs or active dataset found")
+    print(f"set: {set_code}")
     name = f"{set_code}_{args.event}"
     os.makedirs(args.data_dir, exist_ok=True)
     set_file = os.path.join(args.tool_dir, "Sets", f"{name}_All_Data.json")
