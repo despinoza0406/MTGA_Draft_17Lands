@@ -9,6 +9,7 @@ import os
 import logging
 import tkinter
 from tkinter import ttk
+from PIL import Image, ImageDraw, ImageTk
 from src import constants
 from src.ui.styles import Theme
 from src.match_history import update_history, summarize, event_format
@@ -19,7 +20,10 @@ from src.game_review import (
     game_summary_text,
     load_benchmarks,
     patterns,
+    life_diff_series,
+    key_cards,
 )
+from src.ui.components import art_color, sparkline_points
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +82,11 @@ class MatchHistoryPanel(ttk.Frame):
         self.games_table = ttk.Treeview(
             left,
             columns=("game", "event", "result", "side", "flags"),
-            show="headings",
+            show="tree headings",
         )
+        self.games_table.heading("#0", text="Key cards · life difference")
+        self.games_table.column("#0", width=Theme.scaled_val(190), stretch=False)
+        self._row_images = []
         for col, title, width in (
             ("game", "#", 40),
             ("event", "Event", 170),
@@ -171,6 +178,7 @@ class MatchHistoryPanel(ttk.Frame):
             stored = {}
 
         self._games = []
+        self._row_images = []
         self.games_table.delete(*self.games_table.get_children())
         for key, data in reversed(list(stored.items())):
             game = GameLog.from_dict(data)
@@ -181,6 +189,7 @@ class MatchHistoryPanel(ttk.Frame):
                 "",
                 "end",
                 iid=str(len(self._games) - 1),
+                image=self._row_image(game, lookup),
                 values=(
                     game.game_number,
                     game.event or "-",
@@ -193,6 +202,31 @@ class MatchHistoryPanel(ttk.Frame):
         limited = [(g, f) for g, f in self._games if any(h in g.event for h in LIMITED_HINTS)]
         lines = patterns(limited, lookup) or ["No Limited games recorded yet."]
         self._set_text(self.txt_patterns, "\n".join(f"• {line}" for line in lines))
+
+    def _row_image(self, game, lookup):
+        """Three overlapping key-card dots and a life-difference sparkline."""
+        a = Theme.ARENA
+        scale = Theme.current_scale
+        w, h = int(180 * scale), int(24 * scale)
+        img = Image.new("RGB", (w, h), Theme.BG_PRIMARY if Theme.BG_PRIMARY.startswith("#") else a["bg"])
+        draw = ImageDraw.Draw(img)
+        d = h - 4
+        try:
+            cards = key_cards(game, lookup)
+        except Exception:
+            cards = []
+        for i, card in enumerate(cards):
+            x = 2 + i * (d - 6)
+            draw.ellipse((x, 2, x + d, 2 + d), fill=art_color(card.get("colors")), outline=a["bg"], width=2)
+        left = int(70 * scale)
+        draw.line((left, h / 2, w - 4, h / 2), fill=a["line_strong"])
+        points = sparkline_points(life_diff_series(game), w - 4 - left, h - 2)
+        if len(points) >= 4:
+            pts = [(left + points[i], 1 + points[i + 1]) for i in range(0, len(points), 2)]
+            draw.line(pts, fill=a["good"] if game.won else a["bad"], width=max(1, int(1.5 * scale)))
+        photo = ImageTk.PhotoImage(img)
+        self._row_images.append(photo)
+        return photo
 
     @staticmethod
     def _set_text(widget, text):

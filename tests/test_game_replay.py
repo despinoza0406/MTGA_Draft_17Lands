@@ -93,3 +93,25 @@ def test_castable_marks_now_and_with_land_drop():
 
     snapshot = {"my_lands": [[3, None, None, False], [3, None, None, False]], "hand": [1]}
     assert castable_marks(snapshot, card)[1] == "now"
+
+
+def test_turn_summary_and_move_rows():
+    from src.game_review import GameLog
+    from src.ui.windows.game_replay import move_rows, turn_summary
+
+    names = {1: "Island", 2: "Gallia", 3: "Forest", 4: "Beast"}
+    name = lambda g: names.get(g, f"#{g}")
+    t1 = {"turn": 1, "active": "you", "events": [("land", "you", 1), ("draw", "you", 9)]}
+    t2 = {"turn": 2, "active": "opp", "events": [("land", "opp", 3), ("cast", "opp", 4)]}
+    t3 = {"turn": 3, "active": "you", "events": [("cast", "you", 2), ("damage", "you", 2, "opp", 2),
+                                                  ("damage", "opp", 4, 2, 3)]}
+    assert turn_summary(t1, name) == "Island"
+    assert turn_summary(t3, name) == "Gallia · hits for 2"
+    assert turn_summary({"turn": 4, "active": "opp", "events": []}, name) == "—"
+
+    game = GameLog(match_id="m", game_number=1, timeline=[t1, t2, t3])
+    rows = move_rows(game, name, {3})
+    assert [(r["round"], r["you"], r["opp"]) for r in rows] == [
+        (1, "Island", "Forest · Beast"),
+        (2, "?! Gallia · hits for 2", ""),
+    ]

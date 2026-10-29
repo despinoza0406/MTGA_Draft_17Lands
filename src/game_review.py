@@ -776,6 +776,32 @@ def _binomial_cdf(k: int, n: int, p: float) -> float:
     return sum(comb(n, i) * p**i * (1 - p) ** (n - i) for i in range(k + 1))
 
 
+def life_diff_series(game: GameLog) -> List[int]:
+    """Your life minus the opponent's at the end of each turn (0 before turn 1)."""
+    series = [0]
+    for turn in game.turns:
+        if turn.life_end is not None and turn.opponent_life_end is not None:
+            series.append(turn.life_end - turn.opponent_life_end)
+    return series
+
+
+def key_cards(game: GameLog, lookup, count: int = 3) -> List[Dict]:
+    """The highest-rated distinct spells you cast, as card dicts."""
+    seen, cards = set(), []
+    for turn in game.turns:
+        if not turn.mine:
+            continue
+        for grp_id in turn.spells_cast:
+            if grp_id in seen:
+                continue
+            seen.add(grp_id)
+            found = lookup([str(grp_id)])
+            if found and found[0].get("name"):
+                cards.append(found[0])
+    cards.sort(key=lambda c: -_gihwr(c))
+    return cards[:count]
+
+
 def game_summary_text(game: GameLog, lookup, findings: List[Finding]) -> str:
     """Plain-text turn-by-turn summary, to paste into a chat for a deeper review."""
 

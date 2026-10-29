@@ -663,6 +663,8 @@ class DashboardFrame(ttk.Frame):
         active_filter = colors[0] if colors else "All Decks"
         processed_rows = []
 
+        lanes = self._lane_columns(tree, cards, picked_cards)
+
         for card in cards:
             name = card.get(constants.DATA_FIELD_NAME, "Unknown")
             stats = card.get("deck_colors", {}).get(active_filter, {})
@@ -717,6 +719,11 @@ class DashboardFrame(ttk.Frame):
                         row_values.append(f"{rec.model_pick:.0f}%")
                     else:
                         row_values.append("-")
+                elif field in constants.LANE_FIELDS:
+                    lane = lanes.get(field)
+                    lane_stats = card.get("deck_colors", {}).get(lane, {}) if lane else {}
+                    val = lane_stats.get("gihwr", 0.0)
+                    row_values.append(f"{val:.1f}" if val else "—")
                 elif field == "colors":
                     row_values.append("".join(card.get("colors", [])))
                 elif field == "tags":
@@ -788,6 +795,28 @@ class DashboardFrame(ttk.Frame):
 
         if hasattr(tree, "reapply_sort"):
             tree.reapply_sort()
+
+    def _lane_columns(self, tree, cards, picked_cards=None):
+        """Map lane1..3 to the archetypes the pool leans toward and title them."""
+        from src.advisor.lanes import lane_archetypes
+
+        lane_fields = [f for f in tree.active_fields if f in constants.LANE_FIELDS]
+        if not lane_fields:
+            return {}
+        try:
+            taken = self.orchestrator.scanner.retrieve_taken_cards()
+        except Exception:
+            taken = []
+        available = cards[0].get("deck_colors", {}).keys() if cards else []
+        ranked = lane_archetypes(taken, available, len(constants.LANE_FIELDS))
+        lanes = {}
+        for i, field in enumerate(constants.LANE_FIELDS):
+            lane = ranked[i] if i < len(ranked) else None
+            lanes[field] = lane
+            if field in lane_fields:
+                tree.base_labels[field] = f"in {lane}" if lane else "—"
+                tree.heading(field, text=tree.base_labels[field])
+        return lanes
 
     def update_signals(self, scores: Dict[str, float]):
         if self.signal_meter:

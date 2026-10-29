@@ -353,3 +353,19 @@ def test_priority_without_pressure_is_review():
 def test_priority_skips_a_planned_double_spell():
     g = game(priority_turns(opp_power=0, cast=[22, 21], later_cast=[20, 22]), card_stats={20: [3, 3]})
     assert weaker(review_game(g, plk)) == []
+
+
+def test_life_diff_series_and_key_cards():
+    from src.game_review import GameLog, TurnLog, life_diff_series, key_cards
+
+    turns = [
+        TurnLog(number=1, mine=True, spells_cast=[1], life_end=20, opponent_life_end=20),
+        TurnLog(number=2, mine=False, spells_cast=[9], life_end=17, opponent_life_end=20),
+        TurnLog(number=3, mine=True, spells_cast=[2, 1, 3], life_end=17, opponent_life_end=12),
+        TurnLog(number=4, mine=False),
+    ]
+    game = GameLog(match_id="m", game_number=1, turns=turns)
+    assert life_diff_series(game) == [0, 0, -3, 5]
+    rated = {"1": 55.0, "2": 61.0, "3": 50.0, "9": 70.0}
+    lookup = lambda ids: [{"name": f"c{ids[0]}", "deck_colors": {"All Decks": {"gihwr": rated[ids[0]]}}}]
+    assert [c["name"] for c in key_cards(game, lookup)] == ["c2", "c1", "c3"]

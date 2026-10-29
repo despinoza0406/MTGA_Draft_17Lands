@@ -68,7 +68,7 @@ class Settings(BaseModel):
 
     column_configs: Dict[str, List[str]] = Field(
         default_factory=lambda: {
-            "pack_table": ["name", "value", "model", "gihwr"],
+            "pack_table": ["name", "value", "model", "gihwr", "lane1", "lane2", "lane3"],
             "missing_table": ["name", "alsa"],
             "taken_table": ["name", "count", "gihwr"],
             "compare_table": ["name", "gihwr", "iwd"],

@@ -277,6 +277,16 @@ class DraftApp:
             self.root, self, lambda: setattr(self, "match_tracker_window", None)
         )
 
+    def _open_grades(self):
+        if getattr(self, "grades_window", None):
+            self.grades_window.lift()
+            return
+        from src.ui.windows.grades import GradesWindow
+
+        self.grades_window = GradesWindow(
+            self.root, self, lambda: setattr(self, "grades_window", None)
+        )
+
     def _disable_overlay(self):
         if self.overlay_window:
             self.overlay_window.destroy()

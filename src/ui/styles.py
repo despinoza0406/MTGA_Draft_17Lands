@@ -123,8 +123,47 @@ class Theme:
     ERROR = "#ef4444"
     WARNING = "#f59e0b"
 
+    # Display face for headings and numbers (condensed, tabular). Falls back to
+    # the body font where Bahnschrift is missing (it ships with Windows 10+).
+    FONT_DISPLAY = "Bahnschrift SemiBold Condensed" if sys.platform == "win32" else None
+
+    # Flat "Arena" palette from the redesign. Kept as constants so canvases
+    # (replay board, grades grid, sparklines) draw with the same tokens.
+    ARENA = {
+        "bg": "#121214",
+        "surface": "#18181B",
+        "raised": "#1C1C1F",
+        "line": "#26262A",
+        "line_strong": "#2E2E33",
+        "line_soft": "#1D1D21",
+        "control": "#3A3A40",
+        "text": "#EDEBE6",
+        "body": "#CFCCC5",
+        "muted": "#8E8B85",
+        "faint": "#5E5C58",
+        "gold": "#E6B450",
+        "gold_row": "#1C1A15",
+        "good": "#5AA9E6",
+        "bad": "#E8894A",
+    }
+    MANA = {"W": "#F1EDD3", "U": "#9CC5E8", "B": "#B5ACA6", "R": "#E8977A",
+            "G": "#9BBF8D", "C": "#C9C6BE"}
+    ART = {"W": "#7F7A60", "U": "#3D6284", "B": "#4A4340", "R": "#86473A",
+           "G": "#4A6841", "C": "#4A4A50", "M": "#6B5B33"}
+
+    @classmethod
+    def display_font(cls, size: int) -> tuple:
+        family = cls.FONT_DISPLAY or cls.FONT_FAMILY
+        weight = None if cls.FONT_DISPLAY else "bold"
+        return cls.scaled_font(size, weight, family)
+
+    @classmethod
+    def is_arena(cls) -> bool:
+        return cls.BG_PRIMARY == cls.ARENA["bg"]
+
     # Mapping Palette Names -> ttkbootstrap Themes OR 'native'
     THEME_MAPPING = {
+        "Arena": "arena",
         "System": "native",
         "Neutral": "superhero",
         "Dark": "cyborg",
@@ -175,6 +214,118 @@ class Theme:
 
         binder = widget.bind_all if application_wide else widget.bind
         binder("<<ThemeChanged>>", handler, add="+")
+
+    @classmethod
+    def _register_arena(cls, style):
+        if "arena" in style.theme_names():
+            return
+        a = cls.ARENA
+        style.register_theme(
+            ttk.style.ThemeDefinition(
+                "arena",
+                {
+                    "primary": a["gold"],
+                    # Doubles as TEXT_MUTED and as the outline-button color, so it
+                    # must stay readable on the background.
+                    "secondary": a["muted"],
+                    "success": a["good"],
+                    "info": a["good"],
+                    "warning": a["gold"],
+                    "danger": a["bad"],
+                    "light": a["body"],
+                    "dark": a["surface"],
+                    "bg": a["bg"],
+                    "fg": a["text"],
+                    "selectbg": "#2A2619",
+                    "selectfg": a["text"],
+                    "border": a["line_strong"],
+                    "inputfg": a["text"],
+                    "inputbg": a["raised"],
+                    "active": a["raised"],
+                },
+                mode="dark",
+            )
+        )
+
+    @classmethod
+    def _style_arena(cls, style, size):
+        """Flat look: hairline borders, quiet uppercase headings, no relief."""
+        a = cls.ARENA
+        small = max(5, size - 1)
+        style.configure(
+            "Treeview",
+            background=a["bg"],
+            fieldbackground=a["bg"],
+            foreground=a["text"],
+            bordercolor=a["line"],
+            lightcolor=a["bg"],
+            darkcolor=a["bg"],
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", a["gold_row"])],
+            foreground=[("selected", a["text"])],
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=a["bg"],
+            foreground=a["muted"],
+            bordercolor=a["line_strong"],
+            lightcolor=a["bg"],
+            darkcolor=a["bg"],
+            relief="flat",
+            font=(cls.FONT_FAMILY, small, "bold"),
+        )
+        style.map(
+            "Treeview.Heading",
+            background=[("active", a["raised"])],
+            foreground=[("active", a["text"])],
+        )
+        style.configure(
+            "TNotebook",
+            background=a["bg"],
+            bordercolor=a["line"],
+            lightcolor=a["bg"],
+            darkcolor=a["bg"],
+        )
+        style.configure(
+            "TNotebook.Tab",
+            background=a["bg"],
+            bordercolor=a["bg"],
+            lightcolor=a["bg"],
+            darkcolor=a["bg"],
+            foreground=a["muted"],
+            font=(cls.FONT_FAMILY, small, "bold"),
+        )
+        style.map(
+            "TNotebook.Tab",
+            foreground=[("selected", a["text"]), ("active", a["text"])],
+            background=[("selected", a["bg"])],
+            lightcolor=[("selected", a["gold"])],
+            bordercolor=[("selected", a["bg"])],
+        )
+        for name in ("TButton", "Outline.TButton"):
+            style.configure(
+                name,
+                background=a["bg"],
+                foreground=a["text"],
+                bordercolor=a["control"],
+                lightcolor=a["bg"],
+                darkcolor=a["bg"],
+                relief="flat",
+                font=(cls.FONT_FAMILY, small, "bold"),
+            )
+            style.map(
+                name,
+                background=[("pressed", a["raised"]), ("active", a["raised"])],
+                bordercolor=[("active", "#5A5A62")],
+                foreground=[("disabled", a["faint"])],
+            )
+        style.configure("TLabelframe", bordercolor=a["line"], lightcolor=a["bg"], darkcolor=a["bg"])
+        style.configure("TLabelframe.Label", foreground=a["muted"], font=(cls.FONT_FAMILY, small, "bold"))
+        style.configure("TSeparator", background=a["line"])
+        style.configure("Arena.Muted.TLabel", foreground=a["muted"])
+        style.configure("Arena.Title.TLabel", font=cls.display_font(size + 6))
 
     @classmethod
     def apply(cls, root, palette="Neutral", engine=None, custom_path="", scale=1.0):
@@ -281,6 +432,8 @@ class Theme:
 
             else:
                 # --- BOOTSTRAP MODE ---
+                if target_theme == "arena":
+                    cls._register_arena(style)
                 current_theme = (
                     style.theme.name if hasattr(style, "theme") and style.theme else ""
                 )
@@ -296,7 +449,9 @@ class Theme:
                 cls.BG_PRIMARY = sys_bg if sys_bg else colors.bg
 
                 # Ensure zebra striping uses a highly subtle background tint
-                if getattr(style.theme, "type", "dark") == "light":
+                if target_theme == "arena":
+                    cls.BG_SECONDARY = cls.ARENA["surface"]
+                elif getattr(style.theme, "type", "dark") == "light":
                     cls.BG_SECONDARY = colors.light
                 else:
                     cls.BG_SECONDARY = colors.dark
@@ -399,6 +554,8 @@ class Theme:
         style.configure(
             "Card.TFrame", background=cls.BG_PRIMARY, relief="flat", borderwidth=0
         )
+        if not is_custom_loaded and palette == "Arena":
+            cls._style_arena(style, main_font_size)
         root.configure(bg=cls.BG_PRIMARY)
         cls.generation += 1
         root.event_generate("<<ThemeChanged>>")

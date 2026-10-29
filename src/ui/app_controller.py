@@ -267,6 +267,7 @@ class AppController:
         # PUSH DATA TO VIEWS
         self.app.top_bar.update_auto_detect_label(colors)
 
+        self.app.dashboard.orchestrator = self.orchestrator
         self.app.dashboard._current_event_set = es
         self.app.dashboard._current_event_type = et
         self.app.dashboard._current_pack = pk

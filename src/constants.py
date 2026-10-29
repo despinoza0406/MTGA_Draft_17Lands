@@ -218,7 +218,11 @@ COLUMN_FIELD_LABELS = {
     "value": "VALUE: Advisor Tactical Score",
     "model": "MODEL: Trained Pick Probability",
     "tags": "TAGS: Card Roles",
+    "lane1": "LANE 1: GIH WR in your leading archetype",
+    "lane2": "LANE 2: GIH WR in your second archetype",
+    "lane3": "LANE 3: GIH WR in your third archetype",
 }
+LANE_FIELDS = ["lane1", "lane2", "lane3"]
 LABEL_TO_COLUMN_FIELD = {v: k for k, v in COLUMN_FIELD_LABELS.items()}
 
 DECK_FILTER_DEFAULT = FILTER_OPTION_AUTO

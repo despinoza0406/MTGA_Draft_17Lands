@@ -649,7 +649,12 @@ class ModernTreeview(ttk.Treeview):
             self._pulse_step = 0
             self._last_picked_items = current_picked
 
-        if current_picked:
+        if Theme.is_arena():
+            # Flat theme: no pulse, picked rows settle on the gold selection.
+            self.tag_configure(
+                "picked", background="#2A2619", foreground=Theme.ARENA["gold"]
+            )
+        elif current_picked:
             # Sequence for ~1 second (15 frames @ 65ms)
             bg_colors = [
                 "#14532d",
@@ -866,7 +871,7 @@ class ModernTreeview(ttk.Treeview):
         )
 
         # Colored Highlights (Preserved for "Highlight Row by Mana Cost" setting)
-        for t, b, f in [
+        palette = [
             ("white", "#f8fafc", "#0f172a"),
             ("blue", "#e0f2fe", "#0369a1"),
             ("black", "#cbd5e1", "#0f172a"),
@@ -877,7 +882,22 @@ class ModernTreeview(ttk.Treeview):
             ("elite_bomb", "#78350f", "#fde047"),
             ("high_fit", "#0c4a6e", "#e0f2fe"),
             ("picked", "#15803d", "#ffffff"),
-        ]:
+        ]
+        if Theme.is_arena():
+            art, a = Theme.ART, Theme.ARENA
+            palette = [
+                ("white", "#26251E", a["text"]),
+                ("blue", "#182330", a["text"]),
+                ("black", "#211F1E", a["text"]),
+                ("red", "#2A1C18", a["text"]),
+                ("green", "#1B2419", a["text"]),
+                ("gold", "#26221A", a["text"]),
+                ("colorless", "#1F1F22", a["text"]),
+                ("elite_bomb", a["gold_row"], a["gold"]),
+                ("high_fit", "#141C24", Theme.MANA["U"]),
+                ("picked", "#2A2619", a["gold"]),
+            ]
+        for t, b, f in palette:
             self.tag_configure(
                 (
                     f"{t}_card"
@@ -1757,3 +1777,93 @@ class ColorFilterSelector(ttk.Frame):
 
     def set_status(self, text):
         self.status_label.config(text=text)
+
+
+def blend(color: str, base: str, amount: float) -> str:
+    """Mix ``color`` over ``base`` (Tk canvases have no alpha)."""
+    c = [int(color[i : i + 2], 16) for i in (1, 3, 5)]
+    b = [int(base[i : i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(b[i] + (c[i] - b[i]) * amount):02x}" for i in range(3))
+
+
+def art_color(colors) -> str:
+    """Placeholder art tint for a card's colors (gold for multicolor)."""
+    colors = [c for c in (colors or []) if c in "WUBRG"]
+    if not colors:
+        return Theme.ART["C"]
+    return Theme.ART[colors[0]] if len(colors) == 1 else Theme.ART["M"]
+
+
+class CardStrips(tkinter.Canvas):
+    """Hearthstone-style card list: cost box, name over an art strip, count, value.
+
+    rows: dicts with cost, name, colors, count and optional value / strong.
+    """
+
+    ROW = 30
+
+    def __init__(self, parent, **kwargs):
+        a = Theme.ARENA
+        super().__init__(parent, bg=a["bg"], highlightthickness=0, borderwidth=0, **kwargs)
+        self._rows = []
+        self.bind("<Configure>", lambda e: self.redraw())
+        self.bind("<MouseWheel>", self._on_wheel)
+
+    def _on_wheel(self, event):
+        self.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+    def set_rows(self, rows):
+        self._rows = list(rows)
+        self.redraw()
+
+    def redraw(self):
+        self.delete("all")
+        a = Theme.ARENA
+        width = max(self.winfo_width(), 200)
+        row_h = Theme.scaled_val(self.ROW)
+        gap = 1
+        cost_w = Theme.scaled_val(24)
+        count_w = Theme.scaled_val(28)
+        value_w = Theme.scaled_val(42)
+        name_font = Theme.scaled_font(10, "bold")
+        num_font = Theme.display_font(11)
+        for i, row in enumerate(self._rows):
+            y = i * (row_h + gap)
+            x_name = cost_w
+            x_count = width - value_w - count_w
+            self.create_rectangle(0, y, width, y + row_h, fill=a["surface"], width=0)
+            art_w = int((x_count - x_name) * 0.45)
+            self.create_rectangle(
+                x_count - art_w, y, x_count, y + row_h,
+                fill=blend(art_color(row.get("colors")), a["surface"], 0.55), width=0,
+            )
+            self.create_rectangle(0, y, cost_w, y + row_h, fill=a["bg"], width=0)
+            self.create_text(cost_w / 2, y + row_h / 2, text=str(row.get("cost", "")), fill=a["text"], font=num_font)
+            self.create_text(
+                x_name + 8, y + row_h / 2, text=row.get("name", ""), anchor="w",
+                fill=a["text"], font=name_font, width=x_count - x_name - 12,
+            )
+            self.create_rectangle(x_count, y, x_count + count_w, y + row_h, fill=a["bg"], width=0)
+            self.create_text(x_count + count_w / 2, y + row_h / 2, text=str(row.get("count", "")), fill=a["text"], font=num_font)
+            if row.get("value") is not None:
+                self.create_text(
+                    width - 6, y + row_h / 2, text=row["value"], anchor="e",
+                    fill=a["text"] if row.get("strong") else a["muted"], font=num_font,
+                )
+        total = len(self._rows) * (row_h + gap)
+        self.configure(scrollregion=(0, 0, width, total), yscrollincrement=row_h + gap)
+
+
+def sparkline_points(values, width, height, limit=24):
+    """Polyline points for a life-difference series centred on zero."""
+    if not values:
+        return []
+    if len(values) == 1:
+        values = [values[0], values[0]]
+    mid = height / 2
+    step = width / (len(values) - 1)
+    points = []
+    for i, v in enumerate(values):
+        v = max(-limit, min(limit, v))
+        points.extend((i * step, mid - v * (mid - 1) / limit))
+    return points

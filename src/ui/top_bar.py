@@ -62,6 +62,14 @@ class TopBarControls(ttk.Frame):
             width=-13,
         ).pack(side="right", padx=Theme.scaled_val(5))
 
+        ttk.Button(
+            row1,
+            text="Set Grades",
+            bootstyle="secondary-outline",
+            command=self.app._open_grades,
+            width=-11,
+        ).pack(side="right", padx=Theme.scaled_val(5))
+
         self.combo_history = ttk.Combobox(
             row1,
             textvariable=self.app.vars["set_label"],
