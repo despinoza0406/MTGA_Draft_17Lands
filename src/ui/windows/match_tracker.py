@@ -21,8 +21,11 @@ class MatchTrackerWindow(tkinter.Toplevel):
         self.title("Match Tracker")
         self.geometry(f"{Theme.scaled_val(320)}x{Theme.scaled_val(620)}")
         self.attributes("-topmost", True)
-        Theme.apply(self, self.app.configuration.settings.theme)
         self.protocol("WM_DELETE_WINDOW", self.close)
+        # ttk styles are global and already active; only the window background
+        # (a plain Tk option) needs the palette color.
+        self.configure(bg=Theme.BG_PRIMARY)
+        Theme.bind_theme_change(self, lambda e: self.configure(bg=Theme.BG_PRIMARY), application_wide=False)
 
         self.tracker = GameTracker()
         self.tailer = LogTailer(self.app.configuration.settings.arena_log_location, self.tracker)

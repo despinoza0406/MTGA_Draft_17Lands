@@ -97,9 +97,22 @@ class MatchHistoryPanel(ttk.Frame):
         top.pack(fill="x")
         ttk.Label(top, text="FINDINGS (after the game, from your logs)", font=Theme.scaled_font(9, "bold")).pack(side="left")
         ttk.Button(top, text="Copy summary", bootstyle="info-outline", command=self._copy_summary).pack(side="right")
-        self.txt_review = tkinter.Text(right, wrap="word", height=18, font=Theme.scaled_font(9))
+        self.txt_review = tkinter.Text(
+            right, wrap="word", height=18, font=Theme.scaled_font(9), relief="flat", borderwidth=0
+        )
         self.txt_review.pack(fill="both", expand=True, pady=Theme.scaled_val((4, 0)))
         self.txt_review.configure(state="disabled")
+        self._apply_text_colors()
+        Theme.bind_theme_change(self, lambda e: self._apply_text_colors())
+
+    def _apply_text_colors(self):
+        # Plain tk.Text ignores ttk themes; paint it with the active palette.
+        self.txt_review.configure(
+            background=Theme.BG_TERTIARY,
+            foreground=Theme.TEXT_MAIN,
+            insertbackground=Theme.TEXT_MAIN,
+            selectbackground=Theme.ACCENT,
+        )
 
     def refresh(self):
         lookup = self.draft.set_data.get_data_by_id

@@ -3,6 +3,16 @@ tests/conftest.py
 Global pytest configuration and fixtures.
 """
 
+import os
+import tempfile
+
+# Redirect the user config folder before any src import: src.configuration
+# resolves CONFIG_FILE at import time, and tests that save settings would
+# otherwise overwrite the real %APPDATA%/MTGA_Draft_Tool/config.json.
+_TEST_HOME = tempfile.mkdtemp(prefix="mtga-tests-home-")
+os.environ["APPDATA"] = _TEST_HOME
+os.environ["HOME"] = _TEST_HOME
+
 import pytest
 import tkinter
 from src.ui.styles import Theme
