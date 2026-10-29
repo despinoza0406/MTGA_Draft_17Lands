@@ -309,6 +309,7 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
 
     findings = _mulligan_findings(game, benchmarks)
     my_turns = [t for t in game.turns if t.mine]
+    held_turns: Dict[int, int] = {}  # creature grpId -> consecutive turns held while castable
     for index, turn in enumerate(my_turns, start=1):
         if turn.lands_played == 0 and turn.end_hand_lands > 0:
             findings.append(Finding(turn.number, "review", "No land played, but you had a land in hand.", "Missed land drop"))
@@ -326,6 +327,17 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
         ]
         # Mana left open for an instant you could cast is often deliberate.
         held_up = [g for g in turn.end_hand if "Instant" in card(g).get("types", []) and payable(g)]
+        following = next((t for t in game.turns if t.number == turn.number + 1 and not t.mine), None)
+        if castable and held_up and following is not None and not following.spells_cast:
+            findings.append(
+                Finding(
+                    turn.number,
+                    "review",
+                    f"Kept {turn.end_untapped_lands} mana open for {name(held_up[0])} but cast nothing on the "
+                    f"opponent's turn, while {name(castable[0])} sat in hand.",
+                    "Unused mana held for instants",
+                )
+            )
         if castable and not held_up:
             best = max(castable, key=lambda g: float(card(g).get("cmc", 0)))
             findings.append(
@@ -335,6 +347,37 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
                     f"Ended your turn with {turn.end_untapped_lands} untapped lands while holding "
                     f"{name(best)} (cost {card(best).get('cmc')}). Unused mana, if you had the colors.",
                     "Unused mana",
+                )
+            )
+
+        # Creatures kept in hand with the mana to cast them, even when that mana
+        # stayed open for instants: in Limited, developing usually beats holding up.
+        castable_creatures = {
+            g for g in turn.end_hand if "Creature" in card(g).get("types", []) and payable(g)
+        }
+        held_turns = {g: held_turns.get(g, 0) + 1 for g in castable_creatures}
+        for g, held in held_turns.items():
+            if held == HELD_CREATURE_TURNS:
+                findings.append(
+                    Finding(
+                        turn.number,
+                        "review",
+                        f"Held {name(g)} for {held} turns with the mana to cast it"
+                        + (" (kept mana open for instants instead)" if held_up else "")
+                        + ". Deploying threats on curve usually beats holding counters in Limited.",
+                        "Held a castable creature",
+                    )
+                )
+
+        if turn.attackers > 0 and turn.life_end is not None and turn.opponent_power + CRACK_BACK_MARGIN >= turn.life_end:
+            findings.append(
+                Finding(
+                    turn.number,
+                    "review",
+                    f"Attacked with {turn.attackers} creature(s) while the opponent had {turn.opponent_power} power "
+                    f"on board and you were at {turn.life_end} life (pump and counters add more). "
+                    f"Did you keep enough blockers for the crack-back?",
+                    "Risky attack",
                 )
             )
 
@@ -397,6 +440,8 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
 
 
 LOW_MANA_USE = 0.6
+HELD_CREATURE_TURNS = 2
+CRACK_BACK_MARGIN = 3  # pump spells, counters and tricks on the opponent's turn
 LIMITED_DECK_SIZE = (38, 45)
 BEHIND_POWER_GAP = 4
 BIG_HIT = 6

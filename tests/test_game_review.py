@@ -258,3 +258,27 @@ def test_old_records_are_re_recorded(tmp_path):
     assert stored["match-1#1"]["version"] >= 2
     assert stored["match-1#1"]["event"] == "QuickDraft_FRA_1"  # kept from the old record
     assert stored["match-1#1"]["turns"]
+
+
+def test_held_castable_creature_even_with_instants_open():
+    def mine(n):
+        return TurnLog(n, True, lands_played=1, end_hand=[1, 2], end_untapped_lands=2, end_untapped_colors=["G", "R"])
+    turns = [mine(3), TurnLog(4, False, spells_cast=[2]), mine(5), TurnLog(6, False, spells_cast=[2])]
+    findings = review_game(game(turns), lookup)
+    held = [f for f in findings if f.kind == "Held a castable creature"]
+    assert len(held) == 1 and held[0].turn == 5 and "Bear" in held[0].text
+
+
+def test_unused_mana_held_for_instants_is_flagged_only_when_unused():
+    mine = TurnLog(3, True, lands_played=1, end_hand=[1, 2], end_untapped_lands=2, end_untapped_colors=["G", "R"])
+    used = review_game(game([mine, TurnLog(4, False, spells_cast=[2])]), lookup)
+    assert not any(f.kind == "Unused mana held for instants" for f in used)
+    unused = review_game(game([mine, TurnLog(4, False)]), lookup)
+    assert any(f.kind == "Unused mana held for instants" for f in unused)
+
+
+def test_risky_attack_into_a_crack_back():
+    risky = TurnLog(9, True, lands_played=1, attackers=2, eligible_attackers=2, life_end=11, opponent_power=10)
+    assert any(f.kind == "Risky attack" for f in review_game(game([risky]), lookup))
+    safe = TurnLog(9, True, lands_played=1, attackers=2, eligible_attackers=2, life_end=20, opponent_power=10)
+    assert not any(f.kind == "Risky attack" for f in review_game(game([safe]), lookup))
