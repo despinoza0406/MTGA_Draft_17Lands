@@ -9,6 +9,7 @@ import tkinter
 from tkinter import ttk
 from typing import List, Dict, Any, Optional
 import threading
+import logging
 import json
 
 from src import constants
@@ -269,6 +270,18 @@ class DashboardFrame(ttk.Frame):
             self.recap_screen.update_summary(
                 taken_cards, metrics, draft_id, self._current_event_type
             )
+            scanner = getattr(getattr(self, "orchestrator", None), "scanner", None)
+            if scanner and taken_cards and len(taken_cards) >= 40:
+                try:
+                    self.recap_screen.update_pick_review(
+                        self._current_event_set,
+                        self._current_event_type,
+                        scanner.retrieve_draft_history(),
+                        taken_cards,
+                        scanner.set_data.get_data_by_id,
+                    )
+                except Exception as e:
+                    logging.getLogger(__name__).warning(f"Pick review error: {e}")
 
     def _build_active_state(self):
         """State 3: Active drafting / deckbuilding."""

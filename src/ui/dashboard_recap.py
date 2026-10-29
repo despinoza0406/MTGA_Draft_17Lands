@@ -175,6 +175,93 @@ class DraftRecapScreen(ttk.Frame):
             fill="both", expand=True, pady=Theme.scaled_val((0, 10))
         )
 
+        # --- TAB 4: PICK REVIEW (trained pick model) ---
+        tab_review = ttk.Frame(self.recap_notebook, padding=Theme.scaled_val(15))
+        self.recap_notebook.add(tab_review, text=" 🤖 Pick Review ")
+        tab_review.columnconfigure(0, weight=1)
+        tab_review.rowconfigure(1, weight=1)
+
+        self._create_stat_box(tab_review, "MODEL AGREEMENT", "lbl_review_summary").grid(
+            row=0, column=0, sticky="ew", pady=Theme.scaled_val((0, 10))
+        )
+
+        table_frame = ttk.Frame(tab_review)
+        table_frame.grid(row=1, column=0, sticky="nsew")
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+        self.review_table = ttk.Treeview(
+            table_frame,
+            columns=("pick", "yours", "model"),
+            show="headings",
+            height=12,
+        )
+        for col, title, width in (
+            ("pick", "Pick", 70),
+            ("yours", "Your Pick (Model %)", 260),
+            ("model", "Model Pick (%)", 260),
+        ):
+            self.review_table.heading(col, text=title)
+            self.review_table.column(
+                col, width=Theme.scaled_val(width), stretch=col != "pick"
+            )
+        scroll = ttk.Scrollbar(
+            table_frame, orient="vertical", command=self.review_table.yview
+        )
+        self.review_table.configure(yscrollcommand=scroll.set)
+        self.review_table.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
+        self._review_signature = None
+
+    def update_pick_review(self, set_code, event_type, history, taken_cards, lookup):
+        from src.advisor.pick_model import load_pick_model
+        from src.advisor.draft_review import review_draft, summarize
+
+        signature = (set_code, event_type, len(history or []), len(taken_cards or []))
+        if signature == self._review_signature:
+            return
+        self._review_signature = signature
+        self.review_table.delete(*self.review_table.get_children())
+
+        model = load_pick_model(set_code, event_type)
+        if model is None:
+            self.lbl_review_summary.config(
+                text=f"No trained pick model for {set_code or 'this set'}. "
+                "Run training/pick_model/update.py to create one."
+            )
+            return
+
+        reviews = review_draft(model, history, taken_cards, lookup)
+        if not reviews:
+            self.lbl_review_summary.config(
+                text="No pick history recorded for this draft (the tool was not "
+                "running while you drafted)."
+            )
+            return
+
+        stats = summarize(reviews)
+        lines = [
+            f"You matched the model on {stats['agreed']} of {stats['reviewed']} picks "
+            f"({stats['agreement']:.0%}). Biggest disagreements:"
+        ]
+        lines += [
+            f"• P{r.pack}p{r.pick}: took {r.picked} ({r.picked_prob:.0f}%), "
+            f"model wanted {r.model_pick} ({r.model_prob:.0f}%)"
+            for r in stats["biggest_misses"]
+        ]
+        self.lbl_review_summary.config(text="\n".join(lines))
+
+        for r in reviews:
+            mark = "✓" if r.agrees else "✗"
+            self.review_table.insert(
+                "",
+                "end",
+                values=(
+                    f"{mark} P{r.pack}p{r.pick}",
+                    f"{r.picked} ({r.picked_prob:.0f}%)",
+                    "-" if r.agrees else f"{r.model_pick} ({r.model_prob:.0f}%)",
+                ),
+            )
+
     def update_summary(self, taken_cards, metrics, draft_id, event_type):
         if not taken_cards or len(taken_cards) < 40:
             return

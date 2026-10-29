@@ -356,3 +356,70 @@ def test_greedy_skips_unsupported_pair_instead_of_over_splashing(mock_metrics):
     deck, splash_col = build_variant_greedy(pool, ["B", "G"], mock_metrics)
 
     assert deck is None
+
+
+def test_greedy_splash_card_is_not_its_own_fixing(mock_metrics):
+    """Regression: a landcycler counted as fixing for its own splash, so a lone
+    off-color landcycler 'enabled' itself with no other source."""
+    from src.card_logic import build_variant_greedy
+
+    pool = _greedy_pool(main_g=12, main_b=12, splash_u=0)
+    pool = [c for c in pool if "Land" not in c.get("types", [])]
+    pool.append(
+        {
+            "name": "Red Landcycler",
+            "types": ["Sorcery"],
+            "colors": ["R"],
+            "cmc": 5,
+            "mana_cost": "{4}{R}",
+            "text": "Basic landcycling {2} ({2}, discard this card: search your library for a basic land card)",
+            "deck_colors": {"All Decks": {"gihwr": 62.0}},
+        }
+    )
+    deck, splash_col = build_variant_greedy(pool, ["B", "G"], mock_metrics)
+
+    assert splash_col != "R"
+
+
+def test_hybrid_pips_do_not_create_phantom_splash(mock_metrics):
+    """Regression: a {1}{G/U} card in a UB deck counted a green pip, so the deck
+    was labeled 'UB Splash G'."""
+    pool = [
+        {
+            "name": f"Blue Flyer {i}",
+            "types": ["Creature"],
+            "colors": ["U"],
+            "cmc": 2,
+            "mana_cost": "{1}{U}",
+            "deck_colors": {"All Decks": {"gihwr": 57.0}},
+        }
+        for i in range(12)
+    ]
+    pool += [
+        {
+            "name": f"Black Removal {i}",
+            "types": ["Instant"],
+            "colors": ["B"],
+            "cmc": 3,
+            "mana_cost": "{2}{B}",
+            "deck_colors": {"All Decks": {"gihwr": 57.0}},
+        }
+        for i in range(9)
+    ]
+    pool += [
+        {
+            "name": f"Hybrid Spell {i}",
+            "types": ["Sorcery"],
+            "colors": ["G", "U"],
+            "cmc": 2,
+            "mana_cost": "{1}{G/U}",
+            "deck_colors": {"All Decks": {"gihwr": 58.0}},
+        }
+        for i in range(2)
+    ]
+
+    results = suggest_deck(pool, mock_metrics, Configuration(), event_type="PremierDraft")
+
+    assert results
+    for label, variant in results.items():
+        assert "G" not in "".join(variant.get("colors", [])), f"Phantom green in {label}"

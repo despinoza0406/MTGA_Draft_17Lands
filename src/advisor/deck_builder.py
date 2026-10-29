@@ -437,6 +437,7 @@ def suggest_deck(
                 return
 
             pips = {c: 0 for c in constants.CARD_COLORS}
+            hybrid_pips = []
             for card in spells:
                 cost = card.get("mana_cost", "")
                 if not cost:
@@ -445,10 +446,17 @@ def suggest_deck(
                             pips[c] += card.get("count", 1)
                     continue
                 for pip in re.findall(r"\{(.*?)\}", cost):
-                    for opt in [
-                        c for c in pip.split("/") if c in constants.CARD_COLORS
-                    ]:
-                        pips[opt] += card.get("count", 1)
+                    options = [c for c in pip.split("/") if c in constants.CARD_COLORS]
+                    if len(options) == 1:
+                        pips[options[0]] += card.get("count", 1)
+                    elif options:
+                        hybrid_pips.append((options, card.get("count", 1)))
+
+            # A hybrid pip is paid with whichever option the deck already
+            # plays, so it must not add a phantom color (a {G/U} card in a UB
+            # deck is blue, not a green splash).
+            for options, count in hybrid_pips:
+                pips[max(options, key=lambda c: pips[c])] += count
 
             active_colors = sorted(
                 [c for c, count in pips.items() if count > 0],
@@ -797,8 +805,10 @@ def build_variant_greedy(pool, colors, metrics, tier_data=None):
             ):
                 continue
 
+        # A splash card can't be its own fixing (e.g. a landcycler).
+        own_fixing = count_fixing([card]).get(splash_col, 0)
         rating = get_card_rating(card, ["All Decks"], metrics)
-        if rating > best_rating and fixing_sources.get(splash_col, 0) >= 1:
+        if rating > best_rating and fixing_sources.get(splash_col, 0) - own_fixing >= 1:
             splash_candidates.append((card, splash_col, rating))
 
     if not splash_candidates:
