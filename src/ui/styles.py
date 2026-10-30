@@ -481,6 +481,10 @@ class Theme:
             row_height = max(10, int(base_row_height * scale))
 
         style.configure("Treeview", rowheight=row_height, borderwidth=0, relief="flat")
+        # The tree column (#0) only ever shows a picture (card art, sparklines);
+        # its text holds the card name for click handlers, so don't draw it.
+        style.layout("Treeview.Item", [("Treeitem.padding", {"sticky": "nswe", "children": [
+            ("Treeitem.image", {"side": "left", "sticky": ""})]})])
         style.configure("TNotebook", borderwidth=0)
 
         # Make splitters invisible but thick enough to grab easily

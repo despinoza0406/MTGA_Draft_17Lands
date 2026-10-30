@@ -643,6 +643,8 @@ class DashboardFrame(ttk.Frame):
         if not cards:
             return
 
+        self._show_thumbs(tree)
+        tree._thumb_cards = {c.get(constants.DATA_FIELD_NAME): c for c in cards}
         rec_map = {r.card_name: r for r in (recommendations or [])}
         active_filter = colors[0] if colors else "All Decks"
         processed_rows = []
@@ -751,6 +753,7 @@ class DashboardFrame(ttk.Frame):
 
             processed_rows.append(
                 {
+                    "card": card,
                     "card_name": name,
                     "vals": row_values,
                     "tag": row_tag,
@@ -773,12 +776,52 @@ class DashboardFrame(ttk.Frame):
                 "",
                 "end",
                 text=row.get("card_name", ""),
+                image=self._thumb(tree, row["card"]) or "",
                 values=row["vals"],
                 tags=(row["tag"],),
             )
 
         if hasattr(tree, "reapply_sort"):
             tree.reapply_sort()
+
+    THUMB_W = 46
+
+    def _thumb_size(self, tree):
+        try:
+            row_h = int(ttk.Style().lookup("Treeview", "rowheight") or 30)
+        except (tkinter.TclError, ValueError):
+            row_h = 30
+        return Theme.scaled_val(self.THUMB_W), max(12, row_h - 6)
+
+    def _show_thumbs(self, tree):
+        """Show the tree column for the art crop (Theme hides its text, which
+        is the card name the click handlers read)."""
+        if str(tree.cget("show")) != "tree headings":
+            tree.configure(show="tree headings")
+        tree.column("#0", width=self._thumb_size(tree)[0] + Theme.scaled_val(8), minwidth=0, stretch=False, anchor="w")
+        tree.heading("#0", text="")
+
+    def _thumb(self, tree, card):
+        from src.ui.card_art import CardArt
+
+        w, h = self._thumb_size(tree)
+        return CardArt.get(tree, card, w, h, on_ready=lambda t=tree: self._refresh_thumbs(t))
+
+    def _refresh_thumbs(self, tree):
+        """Fill in thumbnails whose art finished downloading after the table was drawn."""
+        try:
+            if not tree.winfo_exists():
+                return
+            cards = getattr(tree, "_thumb_cards", {})
+            for item in tree.get_children():
+                if tree.item(item, "image"):
+                    continue
+                card = cards.get(tree.item(item, "text"))
+                photo = self._thumb(tree, card) if card else None
+                if photo is not None:
+                    tree.item(item, image=photo)
+        except tkinter.TclError:
+            pass
 
     def _lane_columns(self, tree, cards, picked_cards=None):
         """Map lane1..3 to the archetypes the pool leans toward and title them."""

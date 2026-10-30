@@ -109,6 +109,7 @@ class MatchTrackerWindow(tkinter.Toplevel):
                 "count": left,
                 "value": f"{odds:.0%}",
                 "strong": odds >= 0.15,
+                "card": card,
             })
         rows.sort(key=lambda r: r["sort"])
         self.library.set_rows(rows)

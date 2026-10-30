@@ -41,6 +41,9 @@ class DraftApp:
     def __init__(self, root: tkinter.Tk, scanner, configuration):
         self.root = root
         self.configuration = configuration
+        from src.ui.card_art import CardArt
+
+        CardArt.enabled = configuration.features.images_enabled
 
         # 1. IMMEDIATE STATE INITIALIZATION
         self.vars: Dict[str, tkinter.Variable] = {}

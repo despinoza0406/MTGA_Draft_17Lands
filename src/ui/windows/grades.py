@@ -10,6 +10,7 @@ from src import constants
 from src.card_logic import format_win_rate
 from src.ui.styles import Theme
 from src.ui.components import art_color
+from src.ui.card_art import CardArt
 
 COLUMNS = [("W", "White"), ("U", "Blue"), ("B", "Black"), ("R", "Red"), ("G", "Green"),
            ("M", "Multicolor"), ("C", "Colorless")]
@@ -26,7 +27,7 @@ def column_of(card):
 
 
 def grade_grid(cards, metrics, archetype="All Decks", rarity=None, min_games=200):
-    """{grade: {column: [(name, wr, rarity, colors)]}} sorted best first."""
+    """{grade: {column: [(name, wr, rarity, colors, card)]}} sorted best first."""
     grid, seen = {}, set()
     for card in cards:
         # The dataset lists every printing (alt arts, showcase) under its own id.
@@ -43,7 +44,7 @@ def grade_grid(cards, metrics, archetype="All Decks", rarity=None, min_games=200
             continue
         seen.add(card.get("name"))
         grid.setdefault(grade, {}).setdefault(column_of(card), []).append(
-            (card.get("name", ""), wr, card.get("rarity", ""), card.get("colors", []))
+            (card.get("name", ""), wr, card.get("rarity", ""), card.get("colors", []), card)
         )
     for columns in grid.values():
         for entries in columns.values():
@@ -156,9 +157,12 @@ class GradesWindow(tkinter.Toplevel):
             for i, (sym, _) in enumerate(COLUMNS):
                 x = label_w + i * col_w
                 c.create_line(x, y, x, y + h, fill=a["line_soft"])
-                for j, (card, wr, rar, colors) in enumerate(columns.get(sym, [])):
+                for j, (card, wr, rar, colors, data) in enumerate(columns.get(sym, [])):
                     cy = y + 8 + j * entry_h + entry_h / 2
                     c.create_oval(x + 8, cy - r, x + 8 + 2 * r, cy + r, fill=art_color(colors), outline=a["control"])
+                    art = CardArt.get(c, data, 2 * r - 2, 2 * r - 2, shape="circle", on_ready=self._art_ready)
+                    if art is not None:
+                        c.create_image(x + 9, cy - r + 1, image=art, anchor="nw")
                     tx = x + 16 + 2 * r
                     room = col_w - 2 * r - 22
                     label = card
@@ -171,6 +175,16 @@ class GradesWindow(tkinter.Toplevel):
             y += h
             c.create_line(0, y, width, y, fill=a["line_soft"])
         c.configure(scrollregion=(0, 0, width, y + 10))
+
+    def _art_ready(self):
+        # Art arrives in bursts; one redraw per burst is enough.
+        if self.winfo_exists() and not getattr(self, "_art_pending", False):
+            self._art_pending = True
+            self.after(150, self._art_redraw)
+
+    def _art_redraw(self):
+        self._art_pending = False
+        self.redraw()
 
     def close(self):
         self.destroy()

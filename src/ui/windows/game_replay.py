@@ -13,6 +13,7 @@ from typing import Callable, Dict, List
 from src import constants
 from src.ui.styles import Theme
 from src.ui.components import art_color, blend
+from src.ui.card_art import CardArt
 from src.game_review import BASIC_LAND_COLORS, GameLog, Finding, can_pay
 
 LEVEL_ICONS = {"review": "⚠️", "ok": "✓", "info": "ℹ️"}
@@ -318,8 +319,7 @@ class GameReplayWindow(tkinter.Toplevel):
         width = 2 if state or fresh else 1
         face = blend(a["raised"], a["surface"], 0.6) if tapped else a["raised"]
         c.create_rectangle(x, y, x + w, y + h, fill=face, outline=border, width=width)
-        art = art_color(card.get("colors"))
-        c.create_rectangle(x + 4, y + 4, x + w - 4, y + Theme.scaled_val(52), fill=blend(art, face, 0.6 if tapped else 1.0), width=0)
+        self._art(c, card, x + 4, y + 4, w - 8, Theme.scaled_val(48), face, 0.45 if tapped else 0.0)
         c.create_text(x + 6, y + Theme.scaled_val(56), text=self.name(grp), anchor="nw", width=w - 10,
                       fill=a["muted"] if tapped else a["text"], font=Theme.scaled_font(8, "bold"))
         note = f"on {self.name(attached)}" if attached else ""
@@ -337,6 +337,19 @@ class GameReplayWindow(tkinter.Toplevel):
             c.create_text(x, y - 3, text=badge, anchor="sw", fill=border if border != a["control"] else a["muted"],
                           font=Theme.scaled_font(7, "bold"))
         return (x + w / 2, y + h / 2, x, y, w, h)
+
+    def _art(self, c, card, x, y, w, h, face, dim=0.0):
+        """The card's art crop, or its colour block until (or unless) the art loads."""
+        photo = CardArt.get(c, card, w, h, dim=dim, on_ready=self._art_ready)
+        if photo is not None:
+            c.create_image(x, y, image=photo, anchor="nw")
+        else:
+            art = art_color(card.get("colors"))
+            c.create_rectangle(x, y, x + w, y + h, fill=blend(art, face, 1.0 - dim * 0.9), width=0)
+
+    def _art_ready(self):
+        if self.winfo_exists():
+            self._draw_board()
 
     def _board_row(self, c, cards, y, left, right, states, fresh):
         """Lay out a battlefield row; returns grp -> list of card centres."""
@@ -435,7 +448,7 @@ class GameReplayWindow(tkinter.Toplevel):
             mark = marks.get(g, "")
             border = a["gold"] if mark == "now" else (a["good"] if mark else a["control"])
             c.create_rectangle(x, y, x + hw, y + hh, fill=a["raised"], outline=border, width=2 if mark else 1)
-            c.create_rectangle(x + 3, y + 3, x + hw - 3, y + Theme.scaled_val(32), fill=art_color(self.card(g).get("colors")), width=0)
+            self._art(c, self.card(g), x + 3, y + 3, hw - 6, Theme.scaled_val(29), a["raised"])
             c.create_text(x + 5, y + Theme.scaled_val(36), text=self.name(g), anchor="nw", width=hw - 8,
                           fill=a["text"], font=Theme.scaled_font(7, "bold"))
 

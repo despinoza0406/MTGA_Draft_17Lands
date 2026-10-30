@@ -545,9 +545,9 @@ class CardToolTip(tkinter.Toplevel):
                 with open(cp, "rb") as fi:
                     r = fi.read()
             else:
-                req = requests.get(u, headers={"User-Agent": "MTGADraftTool"}, timeout=5)
-                req.raise_for_status()
-                r = req.content
+                from src.ui.card_art import download
+
+                r = download(u, timeout=5)
                 with open(cp, "wb") as fi:
                     fi.write(r)
 
@@ -1797,7 +1797,8 @@ def art_color(colors) -> str:
 class CardStrips(tkinter.Canvas):
     """Hearthstone-style card list: cost box, name over an art strip, count, value.
 
-    rows: dicts with cost, name, colors, count and optional value / strong.
+    rows: dicts with cost, name, colors, count and optional value / strong /
+    card (the card dict, for its art).
     """
 
     ROW = 30
@@ -1806,6 +1807,7 @@ class CardStrips(tkinter.Canvas):
         a = Theme.ARENA
         super().__init__(parent, bg=a["bg"], highlightthickness=0, borderwidth=0, **kwargs)
         self._rows = []
+        self._strips = {}
         self.bind("<Configure>", lambda e: self.redraw())
         self.bind("<MouseWheel>", self._on_wheel)
 
@@ -1833,10 +1835,14 @@ class CardStrips(tkinter.Canvas):
             x_count = width - value_w - count_w
             self.create_rectangle(0, y, width, y + row_h, fill=a["surface"], width=0)
             art_w = int((x_count - x_name) * 0.45)
-            self.create_rectangle(
-                x_count - art_w, y, x_count, y + row_h,
-                fill=blend(art_color(row.get("colors")), a["surface"], 0.55), width=0,
-            )
+            strip = self._art_strip(row.get("card"), art_w, row_h)
+            if strip is not None:
+                self.create_image(x_count - art_w, y, image=strip, anchor="nw")
+            else:
+                self.create_rectangle(
+                    x_count - art_w, y, x_count, y + row_h,
+                    fill=blend(art_color(row.get("colors")), a["surface"], 0.55), width=0,
+                )
             self.create_rectangle(0, y, cost_w, y + row_h, fill=a["bg"], width=0)
             self.create_text(cost_w / 2, y + row_h / 2, text=str(row.get("cost", "")), fill=a["text"], font=num_font)
             self.create_text(
@@ -1852,6 +1858,35 @@ class CardStrips(tkinter.Canvas):
                 )
         total = len(self._rows) * (row_h + gap)
         self.configure(scrollregion=(0, 0, width, total), yscrollincrement=row_h + gap)
+
+
+    def _art_strip(self, card, width, height):
+        """Art crop fading into the row from the left, like Arena's deck list."""
+        if not card or width < 8:
+            return None
+        from src.ui.card_art import CardArt
+
+        key = (card.get(constants.DATA_FIELD_NAME), width, height)
+        if key in self._strips:
+            return self._strips[key]
+        art = CardArt.pil(self, card, width, height, dim=0.25, on_ready=self._art_ready)
+        if art is None:
+            return None
+        base = Image.new("RGB", art.size, Theme.ARENA["surface"])
+        # Dark on the left (where the name sits), full art on the right.
+        fade = Image.linear_gradient("L").rotate(90, expand=True).resize(art.size)
+        photo = ImageTk.PhotoImage(Image.composite(art, base, fade), master=self)
+        self._strips[key] = photo
+        return photo
+
+    def _art_ready(self):
+        if self.winfo_exists() and not getattr(self, "_art_pending", False):
+            self._art_pending = True
+            self.after(150, self._art_redraw)
+
+    def _art_redraw(self):
+        self._art_pending = False
+        self.redraw()
 
 
 def sparkline_points(values, width, height, limit=24):

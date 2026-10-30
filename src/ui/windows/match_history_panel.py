@@ -24,6 +24,7 @@ from src.game_review import (
     key_cards,
 )
 from src.ui.components import art_color, sparkline_points
+from src.ui.card_art import CardArt
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +180,7 @@ class MatchHistoryPanel(ttk.Frame):
 
         self._games = []
         self._row_images = []
+        self._lookup = lookup
         self.games_table.delete(*self.games_table.get_children())
         for key, data in reversed(list(stored.items())):
             game = GameLog.from_dict(data)
@@ -189,7 +191,7 @@ class MatchHistoryPanel(ttk.Frame):
                 "",
                 "end",
                 iid=str(len(self._games) - 1),
-                image=self._row_image(game, lookup),
+                image=self._row_image(game, lookup, str(len(self._games) - 1)),
                 values=(
                     game.game_number,
                     game.event or "-",
@@ -203,7 +205,7 @@ class MatchHistoryPanel(ttk.Frame):
         lines = patterns(limited, lookup) or ["No Limited games recorded yet."]
         self._set_text(self.txt_patterns, "\n".join(f"• {line}" for line in lines))
 
-    def _row_image(self, game, lookup):
+    def _row_image(self, game, lookup, iid=None):
         """Three overlapping key-card dots and a life-difference sparkline."""
         a = Theme.ARENA
         scale = Theme.current_scale
@@ -215,9 +217,13 @@ class MatchHistoryPanel(ttk.Frame):
             cards = key_cards(game, lookup)
         except Exception:
             cards = []
+        refresh = (lambda: self._refresh_row_image(iid)) if iid is not None else None
         for i, card in enumerate(cards):
             x = 2 + i * (d - 6)
             draw.ellipse((x, 2, x + d, 2 + d), fill=art_color(card.get("colors")), outline=a["bg"], width=2)
+            art = CardArt.pil(self, card, d - 4, d - 4, shape="circle", on_ready=refresh)
+            if art is not None:
+                img.paste(art, (x + 2, 4), art)
         left = int(70 * scale)
         draw.line((left, h / 2, w - 4, h / 2), fill=a["line_strong"])
         points = sparkline_points(life_diff_series(game), w - 4 - left, h - 2)
@@ -227,6 +233,16 @@ class MatchHistoryPanel(ttk.Frame):
         photo = ImageTk.PhotoImage(img)
         self._row_images.append(photo)
         return photo
+
+    def _refresh_row_image(self, iid):
+        """Redraw one game's row once its key-card art has downloaded."""
+        try:
+            if not self.games_table.exists(iid):
+                return
+            game = self._games[int(iid)][0]
+            self.games_table.item(iid, image=self._row_image(game, self._lookup, iid))
+        except (tkinter.TclError, IndexError, ValueError):
+            pass
 
     @staticmethod
     def _set_text(widget, text):
