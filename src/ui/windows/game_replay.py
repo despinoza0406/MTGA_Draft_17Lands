@@ -12,11 +12,10 @@ from typing import Callable, Dict, List
 
 from src import constants
 from src.ui.styles import Theme
-from src.ui.components import art_color, blend
+from src.ui.components import art_color, blend, HoverTip
 from src.ui.card_art import CardArt
-from src.game_review import BASIC_LAND_COLORS, GameLog, Finding, can_pay
+from src.game_review import BASIC_LAND_COLORS, GameLog, Finding, can_pay, LEVEL_SYMBOLS, LEVEL_HELP, KIND_HELP
 
-LEVEL_ICONS = {"review": "⚠️", "ok": "✓", "info": "ℹ️"}
 EVENT_TEXT = {
     "cast": "{who} cast {card}",
     "land": "{who} played {card}",
@@ -210,6 +209,8 @@ class GameReplayWindow(tkinter.Toplevel):
         self.moves.pack(fill="both", expand=True)
         self.moves.tag_configure("flag", foreground=a["gold"])
         self.moves.bind("<<TreeviewSelect>>", self._on_move_select)
+        self.moves.bind("<Motion>", self._on_moves_hover, add="+")
+        self.moves.bind("<Leave>", HoverTip.hide, add="+")
         self._move_rows = move_rows(self.game, self.name, self.flagged_turns)
         for i, row in enumerate(self._move_rows):
             tags = ("flag",) if {row["you_turn"], row["opp_turn"]} & self.flagged_turns else ()
@@ -219,6 +220,10 @@ class GameReplayWindow(tkinter.Toplevel):
         self.txt_turn.pack(fill="x", pady=(pad, pad))
         self.txt_turn.tag_configure("flag", foreground=a["gold"])
         self.txt_turn.tag_configure("head", font=Theme.scaled_font(8, "bold"), foreground=a["muted"])
+        for level, help_text in LEVEL_HELP.items():
+            HoverTip.bind_text_tag(self.txt_turn, f"sym_{level}", help_text)
+        for i, help_text in enumerate(KIND_HELP.values()):
+            HoverTip.bind_text_tag(self.txt_turn, f"kind_{i}", help_text)
 
         self._apply_colors()
         Theme.bind_theme_change(self, lambda e: self._apply_colors(), application_wide=False)
@@ -263,6 +268,20 @@ class GameReplayWindow(tkinter.Toplevel):
             if step["entry"]["turn"] == turn and step["phase"] == "end":
                 self.go(i)
                 return
+
+    def _on_moves_hover(self, event):
+        """Hovering a ?! move shows what was flagged on that turn."""
+        row_id = self.moves.identify_row(event.y)
+        if not row_id:
+            return HoverTip.hide()
+        row = self._move_rows[int(row_id)]
+        side = "you" if self.moves.identify_column(event.x) != "#3" else "opp"
+        turn = row[f"{side}_turn"]
+        flagged = [f for f in self.findings if f.level == "review" and f.turn == turn]
+        if not flagged:
+            return HoverTip.hide()
+        text = "\n\n".join(f"?! {f.kind}: {f.text}" for f in flagged)
+        HoverTip.show(self, text, event.x_root, event.y_root)
 
     def _on_graph_click(self, event):
         if not self.steps:
@@ -516,9 +535,12 @@ class GameReplayWindow(tkinter.Toplevel):
                             "Press → to see what you did and the review.\n", "flag")
         elif turn_findings:
             t.insert("end", "REVIEW\n", "head")
+            kinds = list(KIND_HELP)
             for f in turn_findings:
-                prefix = "?! " if f.level == "review" else ("✓ " if f.level == "ok" else "· ")
-                t.insert("end", f"{prefix}{f.text}\n", "flag" if f.level == "review" else "")
+                flag = ("flag",) if f.level == "review" else ()
+                t.insert("end", LEVEL_SYMBOLS.get(f.level, "·") + " ", (f"sym_{f.level}",) + flag)
+                tags = (f"kind_{kinds.index(f.kind)}",) if f.kind in kinds else ()
+                t.insert("end", f"{f.text}\n", tags + flag)
             t.insert("end", "\n")
         if step["phase"] == "end":
             self.learning = False

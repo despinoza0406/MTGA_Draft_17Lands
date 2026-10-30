@@ -22,14 +22,23 @@ from src.game_review import (
     patterns,
     life_diff_series,
     key_cards,
+    spotlight_game,
+    LEVEL_SYMBOLS,
+    LEVEL_HELP,
+    KIND_HELP,
+    SPOTLIGHT_HELP,
 )
-from src.ui.components import art_color, sparkline_points
+from src.ui.components import art_color, sparkline_points, HoverTip
 from src.ui.card_art import CardArt
 
 logger = logging.getLogger(__name__)
 
 LIMITED_HINTS = ("Draft", "Sealed")
-LEVEL_ICONS = {"review": "⚠️", "ok": "✓", "info": "ℹ️"}
+COLUMN_HELP = {
+    "#0": "The three best-rated spells you cast, then your life minus the opponent's, turn by turn "
+          "(blue line: won, orange: lost).",
+    "flags": "How many ?! findings the game has. ★ marks the game most worth a replay.",
+}
 
 
 class MatchHistoryPanel(ttk.Frame):
@@ -80,6 +89,16 @@ class MatchHistoryPanel(ttk.Frame):
         ttk.Label(left, text="GAME REVIEW", font=Theme.scaled_font(10, "bold"), bootstyle="primary").pack(
             anchor="w", pady=Theme.scaled_val((8, 2))
         )
+        # Spotlight: the one game to replay first (hidden when nothing is flagged).
+        self.spotlight = ttk.Frame(left)
+        self.lbl_spotlight = ttk.Label(self.spotlight, text="", font=Theme.scaled_font(9, "bold"),
+                                       foreground=Theme.ARENA["gold"], wraplength=Theme.scaled_val(460), justify="left")
+        self.lbl_spotlight.pack(side="left", fill="x", expand=True)
+        ttk.Button(self.spotlight, text="▶ Replay it", bootstyle="warning-outline",
+                   command=self._replay_spotlight).pack(side="right")
+        self.lbl_spotlight.bind("<Enter>", lambda e: HoverTip.show(self, SPOTLIGHT_HELP, e.x_root, e.y_root))
+        self.lbl_spotlight.bind("<Leave>", HoverTip.hide)
+        self._spotlight_index = None
         self.games_table = ttk.Treeview(
             left,
             columns=("game", "event", "result", "side", "flags"),
@@ -98,7 +117,10 @@ class MatchHistoryPanel(ttk.Frame):
             self.games_table.heading(col, text=title)
             self.games_table.column(col, width=Theme.scaled_val(width), stretch=col == "event")
         self.games_table.pack(fill="both", expand=True)
+        self.games_table.tag_configure("spotlight", foreground=Theme.ARENA["gold"])
         self.games_table.bind("<<TreeviewSelect>>", self._show_review)
+        self.games_table.bind("<Motion>", self._on_games_hover, add="+")
+        self.games_table.bind("<Leave>", HoverTip.hide, add="+")
         self.games_table.bind("<Double-1>", lambda e: self._open_replay())
 
         right = ttk.Frame(panes, padding=Theme.scaled_val((8, 0, 0, 0)))
@@ -121,6 +143,12 @@ class MatchHistoryPanel(ttk.Frame):
         )
         self.txt_review.pack(fill="both", expand=True, pady=Theme.scaled_val((4, 0)))
         self.txt_review.configure(state="disabled")
+        self.txt_review.tag_configure("review", foreground=Theme.ARENA["gold"])
+        self.txt_review.tag_configure("legend", foreground=Theme.ARENA["muted"])
+        for level, help_text in LEVEL_HELP.items():
+            HoverTip.bind_text_tag(self.txt_review, f"sym_{level}", help_text)
+        for i, help_text in enumerate(KIND_HELP.values()):
+            HoverTip.bind_text_tag(self.txt_review, f"kind_{i}", help_text)
         self._apply_text_colors()
         Theme.bind_theme_change(self, lambda e: self._apply_text_colors())
 
@@ -201,6 +229,8 @@ class MatchHistoryPanel(ttk.Frame):
                 ),
             )
 
+        self._show_spotlight()
+
         limited = [(g, f) for g, f in self._games if any(h in g.event for h in LIMITED_HINTS)]
         lines = patterns(limited, lookup) or ["No Limited games recorded yet."]
         self._set_text(self.txt_patterns, "\n".join(f"• {line}" for line in lines))
@@ -255,20 +285,60 @@ class MatchHistoryPanel(ttk.Frame):
         selection = self.games_table.selection()
         return self._games[int(selection[0])] if selection else None
 
+    def _show_spotlight(self):
+        pick = spotlight_game(self._games)
+        self._spotlight_index = pick[0] if pick else None
+        if not pick:
+            self.spotlight.pack_forget()
+            return
+        index, reason = pick
+        game = self._games[index][0]
+        iid = str(index)
+        values = list(self.games_table.item(iid, "values"))
+        values[-1] = f"★ {values[-1]}"
+        self.games_table.item(iid, values=values, tags=("spotlight",))
+        self.lbl_spotlight.config(text=f"★ Review this one: game {game.game_number} of {game.event}. {reason}")
+        self.spotlight.pack(fill="x", pady=Theme.scaled_val((0, 4)), before=self.games_table)
+        if not self.games_table.selection():
+            self.games_table.selection_set(iid)
+            self.games_table.see(iid)
+
+    def _replay_spotlight(self):
+        if self._spotlight_index is None:
+            return
+        self.games_table.selection_set(str(self._spotlight_index))
+        self._open_replay()
+
+    def _on_games_hover(self, event):
+        if self.games_table.identify_region(event.x, event.y) != "heading":
+            return HoverTip.hide()
+        column = self.games_table.identify_column(event.x)
+        name = "#0" if column == "#0" else self.games_table.column(column, "id")
+        HoverTip.show(self, COLUMN_HELP.get(name), event.x_root, event.y_root)
+
     def _show_review(self, _event=None):
         selected = self._selected()
         if not selected:
             return
         game, findings = selected
-        lines = [f"{'Won' if game.won else 'Lost'} on the {'play' if game.on_play else 'draw'}, "
-                 f"{game.mulligans} mulligan(s), {len(game.turns)} turns.", ""]
+        t = self.txt_review
+        t.configure(state="normal")
+        t.delete("1.0", "end")
+        t.insert("end", "Hover a symbol or a finding to see what it means.   ", "legend")
+        for level in ("review", "ok", "info"):
+            t.insert("end", LEVEL_SYMBOLS[level], (f"sym_{level}", "review" if level == "review" else ""))
+            t.insert("end", f" {dict(review='second look', ok='fine', info='context')[level]}   ", "legend")
+        t.insert("end", f"\n\n{'Won' if game.won else 'Lost'} on the {'play' if game.on_play else 'draw'}, "
+                        f"{game.mulligans} mulligan(s), {len(game.turns)} turns.\n\n")
         if not findings:
-            lines.append("Nothing flagged.")
+            t.insert("end", "Nothing flagged.")
+        kinds = list(KIND_HELP)
         for f in findings:
             where = "Game" if f.turn == 0 else f"Turn {f.turn}"
-            lines.append(f"{LEVEL_ICONS.get(f.level, '•')} {where}: {f.text}")
-        lines += ["", "⚠️ = worth a second look, not necessarily a mistake."]
-        self._set_text(self.txt_review, "\n".join(lines))
+            t.insert("end", LEVEL_SYMBOLS.get(f.level, "•"), (f"sym_{f.level}", "review" if f.level == "review" else ""))
+            tags = (f"kind_{kinds.index(f.kind)}",) if f.kind in kinds else ()
+            t.insert("end", f" {where}: {f.text}\n", tags + (("review",) if f.level == "review" else ()))
+        t.configure(state="disabled")
 
     def _open_replay(self):
         selected = self._selected()

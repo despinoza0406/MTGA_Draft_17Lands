@@ -1779,6 +1779,45 @@ class ColorFilterSelector(ttk.Frame):
         self.status_label.config(text=text)
 
 
+class HoverTip:
+    """Small explanation box that follows the mouse; one per app at a time."""
+
+    _window = None
+
+    @classmethod
+    def show(cls, widget, text, x_root, y_root):
+        if not text:
+            return cls.hide()
+        a = Theme.ARENA
+        if cls._window is None or not cls._window.winfo_exists():
+            cls._window = tkinter.Toplevel(widget)
+            cls._window.wm_overrideredirect(True)
+            cls._window.attributes("-topmost", True)
+            cls._label = tkinter.Label(
+                cls._window, justify="left", wraplength=Theme.scaled_val(320),
+                font=Theme.scaled_font(9), padx=8, pady=6, borderwidth=1, relief="solid",
+            )
+            cls._label.pack()
+        cls._label.configure(text=text, background=a["raised"], foreground=a["text"], highlightbackground=a["line_strong"])
+        cls._window.wm_geometry(f"+{x_root + 14}+{y_root + 16}")
+        cls._window.deiconify()
+
+    @classmethod
+    def hide(cls, _event=None):
+        if cls._window is not None:
+            try:
+                cls._window.withdraw()
+            except tkinter.TclError:
+                cls._window = None
+
+    @classmethod
+    def bind_text_tag(cls, text_widget, tag, explanation):
+        """Explain a tagged span of a tk.Text on hover."""
+        text_widget.tag_bind(tag, "<Enter>", lambda e: cls.show(text_widget, explanation, e.x_root, e.y_root))
+        text_widget.tag_bind(tag, "<Motion>", lambda e: cls.show(text_widget, explanation, e.x_root, e.y_root))
+        text_widget.tag_bind(tag, "<Leave>", cls.hide)
+
+
 def blend(color: str, base: str, amount: float) -> str:
     """Mix ``color`` over ``base`` (Tk canvases have no alpha)."""
     c = [int(color[i : i + 2], 16) for i in (1, 3, 5)]

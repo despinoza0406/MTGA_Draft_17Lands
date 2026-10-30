@@ -411,3 +411,42 @@ def test_messages_read_naturally():
     assert _plural(1, "creature") == "1 creature"
     assert _plural(0, "creature") == "0 creatures"
     assert _plural(2, "untapped land") == "2 untapped lands"
+
+
+def test_risky_attack_is_skipped_when_dead_on_board_anyway():
+    hopeless = TurnLog(20, True, lands_played=1, attackers=1, eligible_attackers=1, life_end=9,
+                       opponent_power=22, opponent_creatures=6, my_creatures=1)
+    assert not any(f.kind == "Risky attack" for f in review_game(game([hopeless]), lookup))
+    close = TurnLog(18, True, lands_played=1, attackers=1, eligible_attackers=1, life_end=12,
+                    opponent_power=12, opponent_creatures=4, my_creatures=2)
+    assert any(f.kind == "Risky attack" for f in review_game(game([close]), lookup))
+
+
+def test_card_draw_cast_first_is_not_a_weaker_card():
+    cards = dict(PRIORITY_CARDS)
+    cards["23"] = {"name": "Divination", "types": ["Sorcery"], "cmc": 3, "mana_cost": "{2}{U}",
+                   "oracle_text": "Draw two cards.", "deck_colors": {"All Decks": {"gihwr": 51.0}}}
+    lk = lambda ids: [cards[i] for i in ids if i in cards]
+    turns = [TurnLog(10, True, lands_played=1, spells_cast=[23], end_hand=[20], lands_on_battlefield=5,
+                     land_colors=["U"] * 5, life_start=20), TurnLog(11, False)]
+    assert not weaker(review_game(game(turns), lk))
+
+
+def test_spotlight_prefers_flagged_losses_then_newer():
+    from src.game_review import Finding, spotlight_game
+
+    def g(won, event="PremierDraft_FRA"):
+        return GameLog("m", 1, event=event, won=won, on_play=True)
+
+    flag = lambda t, k="Risky attack": Finding(t, "review", "x", k)
+    reviews = [
+        (g(True), [flag(3)]),
+        (g(False), [flag(7, "Behind on board"), flag(14)]),
+        (g(False), [flag(5), flag(6)]),
+        (g(False, "Ladder"), [flag(1), flag(2), flag(3)]),
+        (g(False), []),
+    ]
+    index, reason = spotlight_game(reviews)
+    assert index == 1
+    assert reason.startswith("Lost on the play") and "Behind on board (turn 7)" in reason
+    assert spotlight_game([(g(False), [])]) is None

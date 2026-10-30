@@ -111,6 +111,23 @@ def _is_counterspell(card: Dict) -> bool:
     return "counter target" in text
 
 
+def _draws_cards(card: Dict) -> bool:
+    """Noncreature spells that draw: casting them first to see more cards is sound sequencing."""
+    if "Creature" in card.get("types", []):
+        return False
+    text = str(_rules(card).get("oracle_text", card.get("text", ""))).lower()
+    return re.search(r"\bdraws? (a|an|one|two|three|four|x) cards?\b", text) is not None
+
+
+def _dead_on_board(turn: "TurnLog") -> bool:
+    """The swing back kills you even with every creature home: holding back changed nothing."""
+    return (
+        turn.life_end is not None
+        and turn.opponent_power >= 2 * turn.life_end
+        and turn.opponent_creatures > turn.my_creatures
+    )
+
+
 @dataclass
 class TurnLog:
     number: int
@@ -534,7 +551,7 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
         spent = sum(float(card(g).get("cmc", 0) or 0) for g in cast_here)
         best_cast = max((_gihwr(card(g)) for g in cast_here), default=None)
         all_lands = turn.land_colors or [""] * turn.lands_on_battlefield
-        if best_cast is not None:
+        if best_cast is not None and not any(_draws_cards(card(g)) for g in cast_here):
             better = [
                 g for g in set(turn.end_hand)
                 if g not in prioritized
@@ -562,7 +579,12 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
                         )
                     )
 
-        if turn.attackers > 0 and turn.life_end is not None and turn.opponent_power + CRACK_BACK_MARGIN >= turn.life_end:
+        if (
+            turn.attackers > 0
+            and turn.life_end is not None
+            and turn.opponent_power + CRACK_BACK_MARGIN >= turn.life_end
+            and not _dead_on_board(turn)
+        ):
             findings.append(
                 Finding(
                     turn.number,
@@ -760,6 +782,59 @@ def _card_cache(lookup):
         return cards[grp_id]
 
     return card
+
+
+# One symbol per finding level, the same in the History list and the Replay.
+LEVEL_SYMBOLS = {"review": "?!", "ok": "✓", "info": "·"}
+LEVEL_HELP = {
+    "review": "Worth a second look. Not necessarily a mistake: open the Replay at that turn and decide.",
+    "ok": "A check that came out fine (keep, mana use).",
+    "info": "Context about the game or your deck. Nothing to fix.",
+}
+# What each check looks at, shown when you hover a finding.
+KIND_HELP = {
+    "Risky keep": "Your opening hand's land count, next to how such keeps did on 17Lands versus a mulligan.",
+    "Low mana use": "Share of your lands' mana spent on turns 2-6, counting spells cast in your turn or the opponent's next one.",
+    "Unused mana": "You ended your turn with lands untapped and a castable spell in hand.",
+    "Unused mana held for instants": "You kept mana open for instants and then didn't use it.",
+    "Held a castable creature": "A creature stayed in hand for several turns while you could pay for it.",
+    "Weaker card cast first": "You cast a lower-rated card (17Lands GIH win rate) while a better one you could also pay for stayed in hand. Card draw spells are skipped.",
+    "Risky attack": "After your attack, the opponent's power on board could nearly kill you. Skipped when you were dead on board anyway.",
+    "Held removal": "Removal stayed in hand with mana up, and you took damage the next turn.",
+    "No attack into an empty board": "The opponent had no untapped blockers and you didn't attack.",
+    "Behind on board": "The opponent had clearly more creatures and power than you.",
+    "Missed land drop": "You had a land in hand but didn't play one.",
+}
+SPOTLIGHT_HELP = ("The recent Limited game most worth a replay: losses with ?! flags first, "
+                  "then the one with the most flags, newest on a tie.")
+
+SPOTLIGHT_RECENT = 10
+LIMITED_EVENT_HINTS = ("Draft", "Sealed")
+
+
+def spotlight_game(reviews: List, recent: int = SPOTLIGHT_RECENT):
+    """The recent Limited game most worth a replay: (index, reason) or None.
+
+    reviews: (game, findings) newest first. Losses with flags beat wins, more
+    flags beat fewer, and on a tie the newer game wins.
+    """
+    best = None
+    for i, (game, findings) in enumerate(reviews[:recent]):
+        if not any(h in (game.event or "") for h in LIMITED_EVENT_HINTS):
+            continue
+        flags = [f for f in findings if f.level == "review"]
+        if not flags:
+            continue
+        score = len(flags) * 2 + (3 if game.won is False else 0)
+        if best is None or score > best[0]:
+            best = (score, i, game, flags)
+    if best is None:
+        return None
+    _, i, game, flags = best
+    result = {True: "Won", False: "Lost", None: "Played"}[game.won]
+    shown = ", ".join(f"{f.kind or 'flag'} (turn {f.turn})" for f in flags[:3])
+    more = f" and {len(flags) - 3} more" if len(flags) > 3 else ""
+    return i, f"{result} on the {'play' if game.on_play else 'draw'}: {shown}{more}."
 
 
 def patterns(reviews: List, lookup) -> List[str]:
