@@ -287,6 +287,20 @@ class AppController:
         advisor = DraftAdvisor(metrics, taken_cards, signals=scores)
         recommendations = advisor.evaluate_pack(pack_cards, pi, current_pack=pk)
 
+        # Pick Two: choose the second card with the first already in the pool.
+        cards_per_pick = getattr(self.orchestrator.scanner, "cards_per_pick", 1)
+        if isinstance(cards_per_pick, int) and cards_per_pick == 2 and recommendations:
+            from src.advisor.pick_two import choose_pair
+
+            recommendations = choose_pair(
+                recommendations,
+                pack_cards,
+                taken_cards,
+                lambda taken, pack: DraftAdvisor(metrics, taken, signals=scores).evaluate_pack(
+                    pack, pi, current_pack=pk
+                ),
+            )
+
         # Trained pick model (optional; only when a model exists for this set)
         pick_model = load_pick_model(es, et)
         if pick_model and recommendations:

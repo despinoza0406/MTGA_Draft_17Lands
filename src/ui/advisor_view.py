@@ -3,6 +3,7 @@ src/ui/advisor_view.py
 The Professional Advisor UI Component.
 """
 
+from src.advisor.pick_two import pair_mark
 import tkinter
 from tkinter import ttk
 import ttkbootstrap as tb
@@ -130,7 +131,7 @@ class AdvisorPanel(tb.Frame):
             font_weight = "bold" if is_elite else "normal"
             lbl_name = tb.Label(
                 header_frame,
-                text=rec.card_name.upper(),
+                text=(f"{pair_mark(rec)} " if getattr(rec, "pair_slot", 0) else "") + rec.card_name.upper(),
                 font=Theme.scaled_font(name_font_size, font_weight),
                 wraplength=Theme.scaled_val(180 if self.mini_mode else 160),
                 justify="left",

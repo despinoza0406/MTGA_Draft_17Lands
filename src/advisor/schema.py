@@ -20,3 +20,4 @@ class Recommendation(BaseModel):
     archetype_fit: str = "Neutral"
     tags: List[str] = []
     model_pick: Optional[float] = None  # 0.0 to 100.0 (trained pick model)
+    pair_slot: int = 0  # Pick Two: 1 = first card, 2 = second card, 3 = both copies

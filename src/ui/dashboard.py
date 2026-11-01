@@ -684,6 +684,11 @@ class DashboardFrame(ttk.Frame):
                         else row_tag
                     )
 
+            if rec and getattr(rec, "pair_slot", 0):
+                from src.advisor.pick_two import pair_mark
+
+                display_name = f"{pair_mark(rec)} {display_name}"
+
             if is_picked:
                 row_tag = "picked"
 
@@ -755,6 +760,8 @@ class DashboardFrame(ttk.Frame):
                 {
                     "card": card,
                     "card_name": name,
+                    # Pick Two: the recommended pair heads the table.
+                    "pair": {1: 0, 3: 0, 2: 1}.get(getattr(rec, "pair_slot", 0), 2) if rec else 2,
                     "vals": row_values,
                     "tag": row_tag,
                     "sort_key": (
@@ -763,7 +770,7 @@ class DashboardFrame(ttk.Frame):
                 }
             )
 
-        processed_rows.sort(key=lambda x: x["sort_key"], reverse=True)
+        processed_rows.sort(key=lambda x: (x["pair"], -x["sort_key"]))
 
         for i, row in enumerate(processed_rows):
             if not self.configuration.settings.card_colors_enabled and row["tag"] in [

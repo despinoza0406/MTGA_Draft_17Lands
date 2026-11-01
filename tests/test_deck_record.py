@@ -70,3 +70,21 @@ def test_record_by_source():
     line = record_by_source([(True, model), (True, model), (False, own), (True, None)])
     assert line == "Deck you played (games): 🤖 Model build 2-0 · Your own build 0-1."
     assert record_by_source([(True, None)]) is None
+
+
+def test_group_runs_splits_drafts_with_the_same_event_name():
+    from src.deck_record import group_runs
+
+    rg = [f"R{i}" for i in range(23)]
+    rg_tweaked = rg[:20] + ["X1", "X2", "X3"]
+    ub = [f"U{i}" for i in range(23)]
+    entries = [
+        ("PickTwoDraft_FRA", rg + ["Forest"] * 17),
+        ("PickTwoDraft_FRA", rg_tweaked),
+        ("PickTwoDraft_FRA", ub),
+        ("PickTwoDraft_FRA", ub),
+        ("Ladder", ["A"]),
+        ("Ladder", ["B"]),
+        ("PickTwoDraft_FRA", ub),
+    ]
+    assert group_runs(entries) == [[0, 1], [2, 3], [4, 5], [6]]

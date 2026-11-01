@@ -180,6 +180,33 @@ def deck_names(grp_ids: List, lookup: Callable[[List[str]], List[Dict]]) -> List
     return out
 
 
+# Consecutive games whose decks share this many nonbasic cards came from one draft
+# (deck tweaks between matches swap a few cards; a new draft swaps nearly all).
+SAME_DRAFT_SHARED = 12
+
+
+def group_runs(entries: List[tuple], min_shared: int = SAME_DRAFT_SHARED) -> List[List[int]]:
+    """Split games (newest first) into runs from the same draft or event.
+
+    entries: (event, deck card names) per game. A new run starts when the
+    event changes or, for Limited, when the deck shares too few cards with
+    the run's first deck. Arena reuses one event name for every draft of a
+    format, so the deck is what tells two drafts apart."""
+    runs: List[List[int]] = []
+    anchor = None
+    for i, (event, names) in enumerate(entries):
+        deck = Counter(n for n in names if n and not _is_basic(n))
+        if runs and anchor is not None and event == anchor[0]:
+            limited = any(h in (event or "") for h in ("Draft", "Sealed"))
+            shared = sum((deck & anchor[1]).values())
+            if not limited or not deck or not anchor[1] or shared >= min_shared:
+                runs[-1].append(i)
+                continue
+        runs.append([i])
+        anchor = (event, deck)
+    return runs
+
+
 def source_text(info: Optional[Dict]) -> str:
     if not info:
         return "?"

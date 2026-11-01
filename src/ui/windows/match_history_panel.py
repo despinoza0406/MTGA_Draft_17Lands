@@ -29,7 +29,9 @@ from src.game_review import (
     SPOTLIGHT_HELP,
 )
 from src.ui.components import art_color, sparkline_points, HoverTip
-from src.deck_record import classify_deck, deck_names, load_snapshots, record_by_source, source_text, SOURCE_NAMES
+from src.deck_record import (
+    classify_deck, deck_names, group_runs, load_snapshots, record_by_source, source_text, SOURCE_NAMES,
+)
 from src.ui.card_art import CardArt
 
 logger = logging.getLogger(__name__)
@@ -123,6 +125,7 @@ class MatchHistoryPanel(ttk.Frame):
             self.games_table.column(col, width=Theme.scaled_val(width), stretch=col == "event")
         self.games_table.pack(fill="both", expand=True)
         self.games_table.tag_configure("spotlight", foreground=Theme.ARENA["gold"])
+        self.games_table.tag_configure("draft", foreground=Theme.ARENA["muted"], font=Theme.scaled_font(9, "bold"))
         self.games_table.bind("<<TreeviewSelect>>", self._show_review)
         self.games_table.bind("<Motion>", self._on_games_hover, add="+")
         self.games_table.bind("<Leave>", HoverTip.hide, add="+")
@@ -215,29 +218,44 @@ class MatchHistoryPanel(ttk.Frame):
         self._row_images = []
         self._lookup = lookup
         self._deck_sources = []
+        self._runs = []
         snapshots = load_snapshots()
+        matches = {m["match_id"]: m for m in history}
         self.games_table.delete(*self.games_table.get_children())
+        decks = []
         for key, data in reversed(list(stored.items())):
             game = GameLog.from_dict(data)
             fmt, set_code = event_format(game.event)
             findings = review_game(game, lookup, load_benchmarks(set_code, fmt))
             self._games.append((game, findings))
-            source = classify_deck(deck_names(game.deck, lookup), snapshots)
-            self._deck_sources.append(source)
+            names = deck_names(game.deck, lookup)
+            decks.append((game.event, names))
+            self._deck_sources.append(classify_deck(names, snapshots))
+
+        # One header row per draft (or run of other games), its games beneath.
+        self._runs = group_runs(decks)
+        for r, run in enumerate(self._runs):
+            parent = f"d{r}"
             self.games_table.insert(
-                "",
-                "end",
-                iid=str(len(self._games) - 1),
-                image=self._row_image(game, lookup, str(len(self._games) - 1)),
-                values=(
-                    game.game_number,
-                    game.event or "-",
-                    {True: "Win", False: "Loss", None: "?"}[game.won],
-                    "Play" if game.on_play else "Draw",
-                    source_text(source),
-                    sum(f.level == "review" for f in findings),
-                ),
+                "", "end", iid=parent, open=True, tags=("draft",),
+                values=self._run_header(run, matches),
             )
+            for i in run:
+                game, findings = self._games[i]
+                self.games_table.insert(
+                    parent,
+                    "end",
+                    iid=str(i),
+                    image=self._row_image(game, lookup, str(i)),
+                    values=(
+                        game.game_number,
+                        game.event or "-",
+                        {True: "Win", False: "Loss", None: "?"}[game.won],
+                        "Play" if game.on_play else "Draw",
+                        source_text(self._deck_sources[i]),
+                        sum(f.level == "review" for f in findings),
+                    ),
+                )
 
         self._show_spotlight()
 
@@ -249,6 +267,28 @@ class MatchHistoryPanel(ttk.Frame):
         if by_source:
             lines.insert(1, by_source)
         self._set_text(self.txt_patterns, "\n".join(f"• {line}" for line in lines))
+
+    def _run_header(self, run, matches):
+        """Header values for a draft: format, set, colors, record, date, deck source."""
+        first = self._games[run[0]][0]
+        fmt, set_code = event_format(first.event)
+        match = matches.get(first.match_id, {})
+        colors = match.get("colors", "")
+        wins = sum(self._games[i][0].won is True for i in run)
+        losses = sum(self._games[i][0].won is False for i in run)
+        recorded = str(match.get("recorded", ""))[:10]
+        day = f"{recorded[8:10]}/{recorded[5:7]}" if len(recorded) == 10 else ""
+        # Short enough for the Event column: "Gruul · FRA · 31/10".
+        limited = any(h in (first.event or "") for h in LIMITED_HINTS)
+        title = " · ".join(x for x in (
+            (constants.COLOR_NAMES_DICT.get(colors, colors) if colors else "") if limited else (first.event or "Games"),
+            set_code or "",
+            day,
+        ) if x)
+        source = next((self._deck_sources[i] for i in run if self._deck_sources[i]), None)
+        flags = sum(sum(f.level == "review" for f in self._games[i][1]) for i in run)
+        return ("", title, f"{wins}-{losses}", f"{len(run)} game{'s' if len(run) != 1 else ''}",
+                source_text(source) if source else "", flags)
 
     def _row_image(self, game, lookup, iid=None):
         """Three overlapping key-card dots and a life-difference sparkline."""
@@ -298,7 +338,9 @@ class MatchHistoryPanel(ttk.Frame):
 
     def _selected(self):
         selection = self.games_table.selection()
-        return self._games[int(selection[0])] if selection else None
+        if not selection or not selection[0].isdigit():
+            return None
+        return self._games[int(selection[0])]
 
     def _show_spotlight(self):
         pick = spotlight_game(self._games)
@@ -317,6 +359,9 @@ class MatchHistoryPanel(ttk.Frame):
         if not self.games_table.selection():
             self.games_table.selection_set(iid)
             self.games_table.see(iid)
+            parent = self.games_table.parent(iid)
+            if parent:
+                self.games_table.see(parent)  # keep its draft's header in view
 
     def _replay_spotlight(self):
         if self._spotlight_index is None:
@@ -332,6 +377,9 @@ class MatchHistoryPanel(ttk.Frame):
         HoverTip.show(self, COLUMN_HELP.get(name), event.x_root, event.y_root)
 
     def _show_review(self, _event=None):
+        selection = self.games_table.selection()
+        if selection and selection[0].startswith("d"):
+            return self._show_run(int(selection[0][1:]))
         selected = self._selected()
         if not selected:
             return
@@ -359,6 +407,22 @@ class MatchHistoryPanel(ttk.Frame):
             tags = (f"kind_{kinds.index(f.kind)}",) if f.kind in kinds else ()
             t.insert("end", f" {where}: {f.text}\n", tags + (("review",) if f.level == "review" else ()))
         t.configure(state="disabled")
+
+    def _show_run(self, r):
+        """A draft's header row: its games at a glance."""
+        run = self._runs[r]
+        lines = [" · ".join(str(v) for v in self.games_table.item(f"d{r}", "values")[1:4] if v), ""]
+        for i in run:
+            game, findings = self._games[i]
+            flags = sum(f.level == "review" for f in findings)
+            result = {True: "Won", False: "Lost", None: "?"}[game.won]
+            lines.append(f"{result} on the {'play' if game.on_play else 'draw'}, {len(game.turns)} turns"
+                         + (f", {flags} ?! to review" if flags else ""))
+        source = next((self._deck_sources[i] for i in run if self._deck_sources[i]), None)
+        if source:
+            lines += ["", f"Deck: {SOURCE_NAMES[source['source']]} (closest: {source['label']})."]
+        lines += ["", "Select a game to see its review."]
+        self._set_text(self.txt_review, "\n".join(lines))
 
     def _open_replay(self):
         selected = self._selected()
