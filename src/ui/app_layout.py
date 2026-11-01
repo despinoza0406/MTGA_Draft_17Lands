@@ -172,6 +172,10 @@ class AppLayoutManager:
         btn.pack(fill="x")
         return btn
 
+    def show_draft_page(self):
+        if self.notebook and self.dashboard_page and self.notebook.select() != str(self.dashboard_page):
+            self.notebook.select(self.dashboard_page)
+
     def _sync_nav(self):
         try:
             current = self.notebook.select()
@@ -197,6 +201,10 @@ class AppLayoutManager:
                 self.notebook.select(self.panel_custom),
             ],
             app_context=self.app,
+            on_load_arena=lambda: [
+                self.notebook.select(self.panel_custom),
+                self.panel_custom.load_arena_deck(),
+            ],
         )
         self.panel_compare = ComparePanel(
             self.notebook, self.app.orchestrator.scanner, self.config

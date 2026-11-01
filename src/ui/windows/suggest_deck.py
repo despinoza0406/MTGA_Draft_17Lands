@@ -34,11 +34,13 @@ class SuggestDeckPanel(ttk.Frame):
         configuration,
         on_export_custom=None,
         app_context=None,
+        on_load_arena=None,
     ):
         super().__init__(parent)
         self.draft = draft_manager
         self.configuration = configuration
         self.on_export_custom = on_export_custom
+        self.on_load_arena = on_load_arena
         self.app_context = app_context
 
         self.suggestions: Dict[str, Any] = {}
@@ -113,6 +115,14 @@ class SuggestDeckPanel(ttk.Frame):
                 ),
             )
             self.btn_export_builder.pack(side="right", padx=Theme.scaled_val(5))
+
+        if self.on_load_arena:
+            ttk.Button(
+                self.arch_frame,
+                text="📥 Load Arena deck",
+                bootstyle="warning-outline",
+                command=self.on_load_arena,
+            ).pack(side="right", padx=Theme.scaled_val(5))
 
         self.notes_frame = ttk.Frame(
             self, style="Card.TFrame", padding=Theme.scaled_val((10, 0, 5, 5))
@@ -863,6 +873,7 @@ class SuggestDeckPanel(ttk.Frame):
 
     def _calculate_suggestions(self):
         raw_pool = self.draft.retrieve_taken_cards()
+        self._build_pool = list(raw_pool or [])
 
         playable_spells = [
             c for c in (raw_pool or []) if "Land" not in c.get("types", [])
@@ -995,11 +1006,28 @@ class SuggestDeckPanel(ttk.Frame):
             return
 
         self.suggestions = sorted_decks
+        self._remember_suggestions(sorted_decks)
         dropdown_labels = list(sorted_decks.keys())
         self._update_dropdown_options(dropdown_labels)
 
         # Always snap to the mathematically strongest deck once analysis completes
         self._on_deck_selection_change(dropdown_labels[0])
+
+    def _remember_suggestions(self, sorted_decks):
+        """Keep the suggestions so History can tell which deck you went on to play."""
+        try:
+            from src.deck_record import save_suggestions
+
+            event = getattr(self.draft, "event_string", "") or ""
+            save_suggestions(
+                getattr(self, "_build_pool", []),
+                {label: data.get("deck_cards", []) for label, data in sorted_decks.items()},
+                event,
+            )
+        except Exception as e:
+            import logging
+
+            logging.getLogger(__name__).warning(f"Could not record deck suggestions: {e}")
 
     def _handle_builder_error(self, error_msg):
         self.is_building = False

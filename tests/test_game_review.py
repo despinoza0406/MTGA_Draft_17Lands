@@ -450,3 +450,27 @@ def test_spotlight_prefers_flagged_losses_then_newer():
     assert index == 1
     assert reason.startswith("Lost on the play") and "Behind on board (turn 7)" in reason
     assert spotlight_game([(g(False), [])]) is None
+
+
+def test_repeated_flags_merge_into_one_line():
+    turns = [TurnLog(n, True, lands_played=1, attackers=1, eligible_attackers=1, life_end=11, opponent_power=10,
+                     opponent_creatures=3, my_creatures=3) for n in (21, 23, 25)]
+    risky = [f for f in review_game(game(turns), lookup) if f.kind == "Risky attack"]
+    assert len(risky) == 1 and risky[0].turn == 21 and risky[0].text.endswith("Same on turns 23, 25.")
+
+
+def test_missed_land_drop_is_skipped_with_plenty_of_lands():
+    plenty = TurnLog(16, True, end_hand=[3, 1], end_hand_lands=1, lands_on_battlefield=8)
+    assert not any(f.kind == "Missed land drop" for f in review_game(game([plenty]), lookup))
+    short = TurnLog(6, True, end_hand=[3, 1], end_hand_lands=1, lands_on_battlefield=3)
+    assert any(f.kind == "Missed land drop" for f in review_game(game([short]), lookup))
+
+
+def test_unrated_card_is_not_called_weaker():
+    cards = dict(PRIORITY_CARDS)
+    cards["24"] = {"name": "New Card", "types": ["Creature"], "cmc": 3, "mana_cost": "{2}{U}",
+                   "deck_colors": {"All Decks": {"gihwr": 0.0}}}
+    lk = lambda ids: [cards[i] for i in ids if i in cards]
+    turns = [TurnLog(10, True, lands_played=1, spells_cast=[24], end_hand=[20], lands_on_battlefield=5,
+                     land_colors=["U"] * 5, life_start=20), TurnLog(11, False)]
+    assert not weaker(review_game(game(turns), lk))

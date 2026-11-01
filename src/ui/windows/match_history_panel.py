@@ -29,6 +29,7 @@ from src.game_review import (
     SPOTLIGHT_HELP,
 )
 from src.ui.components import art_color, sparkline_points, HoverTip
+from src.deck_record import classify_deck, deck_names, load_snapshots, record_by_source, source_text, SOURCE_NAMES
 from src.ui.card_art import CardArt
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,9 @@ COLUMN_HELP = {
     "#0": "The three best-rated spells you cast, then your life minus the opponent's, turn by turn "
           "(blue line: won, orange: lost).",
     "flags": "How many ?! findings the game has. ★ marks the game most worth a replay.",
+    "deck": "Where the deck you played came from: 🤖 the trained model's build, Sugg. another suggested "
+            "deck, Own your own build (more than 3 cards changed). +N = cards you swapped in. "
+            "? = no suggestion was saved for that draft.",
 }
 
 
@@ -101,7 +105,7 @@ class MatchHistoryPanel(ttk.Frame):
         self._spotlight_index = None
         self.games_table = ttk.Treeview(
             left,
-            columns=("game", "event", "result", "side", "flags"),
+            columns=("game", "event", "result", "side", "deck", "flags"),
             show="tree headings",
         )
         self.games_table.heading("#0", text="Key cards · life difference")
@@ -112,6 +116,7 @@ class MatchHistoryPanel(ttk.Frame):
             ("event", "Event", 170),
             ("result", "Result", 60),
             ("side", "Play/Draw", 70),
+            ("deck", "Deck", 70),
             ("flags", "To review", 70),
         ):
             self.games_table.heading(col, text=title)
@@ -209,12 +214,16 @@ class MatchHistoryPanel(ttk.Frame):
         self._games = []
         self._row_images = []
         self._lookup = lookup
+        self._deck_sources = []
+        snapshots = load_snapshots()
         self.games_table.delete(*self.games_table.get_children())
         for key, data in reversed(list(stored.items())):
             game = GameLog.from_dict(data)
             fmt, set_code = event_format(game.event)
             findings = review_game(game, lookup, load_benchmarks(set_code, fmt))
             self._games.append((game, findings))
+            source = classify_deck(deck_names(game.deck, lookup), snapshots)
+            self._deck_sources.append(source)
             self.games_table.insert(
                 "",
                 "end",
@@ -225,6 +234,7 @@ class MatchHistoryPanel(ttk.Frame):
                     game.event or "-",
                     {True: "Win", False: "Loss", None: "?"}[game.won],
                     "Play" if game.on_play else "Draw",
+                    source_text(source),
                     sum(f.level == "review" for f in findings),
                 ),
             )
@@ -233,6 +243,11 @@ class MatchHistoryPanel(ttk.Frame):
 
         limited = [(g, f) for g, f in self._games if any(h in g.event for h in LIMITED_HINTS)]
         lines = patterns(limited, lookup) or ["No Limited games recorded yet."]
+        by_source = record_by_source(
+            [(g.won, s) for (g, _), s in zip(self._games, self._deck_sources) if any(h in g.event for h in LIMITED_HINTS)]
+        )
+        if by_source:
+            lines.insert(1, by_source)
         self._set_text(self.txt_patterns, "\n".join(f"• {line}" for line in lines))
 
     def _row_image(self, game, lookup, iid=None):
@@ -329,7 +344,12 @@ class MatchHistoryPanel(ttk.Frame):
             t.insert("end", LEVEL_SYMBOLS[level], (f"sym_{level}", "review" if level == "review" else ""))
             t.insert("end", f" {dict(review='second look', ok='fine', info='context')[level]}   ", "legend")
         t.insert("end", f"\n\n{'Won' if game.won else 'Lost'} on the {'play' if game.on_play else 'draw'}, "
-                        f"{game.mulligans} mulligan(s), {len(game.turns)} turns.\n\n")
+                        f"{game.mulligans} mulligan(s), {len(game.turns)} turns.\n")
+        source = self._deck_sources[int(self.games_table.selection()[0])]
+        if source:
+            changed = f", {source['changes']} card(s) changed" if source["changes"] else ""
+            t.insert("end", f"Deck: {SOURCE_NAMES[source['source']]} (closest: {source['label']}{changed}).\n")
+        t.insert("end", "\n")
         if not findings:
             t.insert("end", "Nothing flagged.")
         kinds = list(KIND_HELP)

@@ -99,3 +99,33 @@ def test_load_finds_deck_model_by_set(tmp_path, monkeypatch):
     write_model(tmp_path / "TST_PremierDraft_deck_model.npz", ["A"], [0.0])
     assert load_deck_model("TST", "QuickDraft", str(tmp_path)) is not None
     assert load_deck_model("NOP", "QuickDraft", str(tmp_path)) is None
+
+
+def test_build_within_allowed_cards_fills_to_min_spells(model, pool):
+    deck = model.build(pool, allowed=lambda c: "R" in c["colors"] or c["name"] in {f"Blue {i}" for i in range(20)},
+                       min_spells=23)
+    assert sum(c["count"] for c in deck) == 23
+    assert {c["name"] for c in deck} >= {f"Red {i}" for i in range(3)}  # filled past the 20 blues
+
+
+def test_pair_strength_ranks_the_pool_main_pair(model, pool):
+    ranked = model.pair_strength(pool)
+    assert ranked[0][0] in {"WU", "UB", "UR", "UG"}
+    assert ranked[0][1] > 20
+
+
+def test_model_variants_add_another_pair_only_when_it_is_a_real_deck(tmp_path, monkeypatch):
+    from src.advisor.deck_builder import MODEL_VARIANT, build_model_variants
+
+    pool = ([spell(f"Blue {i}") for i in range(24)] + [spell(f"Red {i}", "R") for i in range(14)]
+            + [spell(f"Green {i}", "G") for i in range(12)])
+    names = [c["name"] for c in pool]
+    bias = [3.0 if n.startswith("Blue") else (0.5 if n.startswith("Red") else -3.0) for n in names]
+    model = DeckModel(write_model(tmp_path / "m.npz", names, bias))
+    monkeypatch.setattr(deck_model, "load_deck_model", lambda set_code, event: model)
+    builds = build_model_variants(pool)
+    labels = [name for name, _, _ in builds]
+    assert labels[0] == MODEL_VARIANT
+    assert f"{MODEL_VARIANT} (alt)" in labels
+    for _, deck, _ in builds:
+        assert sum(c.get("count", 1) for c in deck) == 40

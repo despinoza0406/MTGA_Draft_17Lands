@@ -405,6 +405,7 @@ class GameRecorder(GameTracker):
             turn.eligible_attackers = sum(
                 1 for o in mine_bf
                 if _is_type(o, "Creature") and not o.get("isTapped") and not o.get("hasSummoningSickness")
+                and (o.get("power") or {}).get("value", 0) > 0
             )
             turn.opponent_blockers = sum(1 for o in opp_bf if _is_type(o, "Creature") and not o.get("isTapped"))
         if step in ("Step_DeclareAttack", "Step_DeclareBlock", "Step_CombatDamage"):
@@ -485,7 +486,10 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
     held_turns: Dict[int, int] = {}  # creature grpId -> consecutive turns held while castable
     prioritized = set()  # cards already flagged by the prioritization check
     for index, turn in enumerate(my_turns, start=1):
-        if turn.lands_played == 0 and turn.end_hand_lands > 0:
+        top_cost = max((float(card(g).get("cmc", 0) or 0) for g in turn.end_hand
+                        if "Land" not in card(g).get("types", [])), default=0)
+        enough_lands = turn.lands_on_battlefield >= max(MISSED_LAND_ENOUGH, top_cost)
+        if turn.lands_played == 0 and turn.end_hand_lands > 0 and not enough_lands:
             findings.append(Finding(turn.number, "review", "No land played, but you had a land in hand.", "Missed land drop"))
 
         sources = turn.end_untapped_colors or [""] * turn.end_untapped_lands
@@ -551,7 +555,8 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
         spent = sum(float(card(g).get("cmc", 0) or 0) for g in cast_here)
         best_cast = max((_gihwr(card(g)) for g in cast_here), default=None)
         all_lands = turn.land_colors or [""] * turn.lands_on_battlefield
-        if best_cast is not None and not any(_draws_cards(card(g)) for g in cast_here):
+        unrated = any(_gihwr(card(g)) <= 0 for g in cast_here)
+        if best_cast is not None and not unrated and not any(_draws_cards(card(g)) for g in cast_here):
             better = [
                 g for g in set(turn.end_hand)
                 if g not in prioritized
@@ -653,7 +658,32 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
         findings.append(Finding(turn, "info", f"Biggest hit: you lost {lost} life on turn {turn}. Look at how the board got there."))
 
     findings += deck_findings(game, card, benchmarks)
-    return sorted(findings, key=lambda f: f.turn)
+    return _merge_repeats(sorted(findings, key=lambda f: f.turn))
+
+
+def _merge_repeats(findings: List[Finding]) -> List[Finding]:
+    """Keep the first ?! of each kind and list the turns it came back on."""
+    first: Dict[str, Finding] = {}
+    later: Dict[str, List[int]] = {}
+    out = []
+    for f in findings:
+        if f.level != "review" or not f.kind or f.kind not in REPEATABLE_KINDS:
+            out.append(f)
+        elif f.kind not in first:
+            first[f.kind] = f
+            out.append(f)
+        else:
+            later.setdefault(f.kind, []).append(f.turn)
+    for kind, turns in later.items():
+        f = first[kind]
+        f.text += f" Same on turn{'s' if len(turns) > 1 else ''} {', '.join(map(str, turns))}."
+    return out
+
+
+MISSED_LAND_ENOUGH = 7
+# Flags that tend to repeat every turn of a board stall; the rest stay per turn.
+REPEATABLE_KINDS = ("Risky attack", "No attack into an empty board", "Missed land drop", "Unused mana",
+                    "Unused mana held for instants")
 
 
 LOW_MANA_USE = 0.6

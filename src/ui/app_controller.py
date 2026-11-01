@@ -197,6 +197,50 @@ class AppController:
         self.orchestrator.request_math_update()
         self.refresh_ui_data()
 
+    def _follow_live_pick(self, draft_id, pack, pick, pack_cards):
+        """Bring the Draft page forward once per draft, when its first pack shows
+        up in the live log. Later picks leave you on the page you chose, and old
+        drafts opened from history never switch."""
+        orchestrator = self.orchestrator
+        live = getattr(orchestrator, "live_log_path", None)
+        if not pack_cards or not live or orchestrator.scanner.arena_file != live:
+            return
+        key = draft_id or (pack, pick)
+        if key == getattr(self, "_last_live_draft", None):
+            return
+        self._last_live_draft = key
+        try:
+            self.app.layout_manager.show_draft_page()
+        except Exception as e:
+            logger.debug(f"Could not switch to the Draft page: {e}")
+
+    MIN_FINISHED_POOL = 40
+
+    def _remember_model_deck(self, draft_id, event_type, taken_cards, pack_cards):
+        """Once a draft is over, save the trained model's build for its pool, so
+        History can tell whether you played it (no need to open the Deck page)."""
+        if pack_cards or not taken_cards or len(taken_cards) < self.MIN_FINISHED_POOL:
+            return
+        key = (draft_id, len(taken_cards))
+        if key == getattr(self, "_model_deck_saved", None):
+            return
+        self._model_deck_saved = key
+        pool = list(taken_cards)
+        event = getattr(self.orchestrator.scanner, "event_string", "") or ""
+
+        def work():
+            try:
+                from src.advisor.deck_builder import build_model_variants
+                from src.deck_record import save_suggestions
+
+                builds = build_model_variants(pool, event_type or "PremierDraft")
+                if builds:
+                    save_suggestions(pool, {name: deck for name, deck, _ in builds}, event)
+            except Exception as e:
+                logger.warning(f"Could not record the model deck: {e}")
+
+        threading.Thread(target=work, daemon=True).start()
+
     def refresh_ui_data(self):
         """Core UI Synchronization Logic. Aggregates data, runs math engines, and updates the Views."""
         if not self.app._initialized or self.app._rebuilding_ui:
@@ -225,6 +269,9 @@ class AppController:
             event_string = self.orchestrator.scanner.event_string
         finally:
             self.orchestrator.scanner.lock.release()
+
+        self._follow_live_pick(draft_id, pk, pi, pack_cards)
+        self._remember_model_deck(draft_id, et, taken_cards, pack_cards)
 
         # ADVISOR & SIGNAL MATH
         sig_calc = SignalCalculator(metrics)

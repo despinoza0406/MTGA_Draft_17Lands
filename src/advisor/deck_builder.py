@@ -3,6 +3,7 @@ src/advisor/deck_builder.py
 AI Deck Suggester and Auto-Optimizer. Generates distinct archetype variants.
 """
 
+from collections import Counter
 import copy
 import logging
 import re
@@ -507,8 +508,11 @@ def suggest_deck(
                         else f"Splash {''.join(active_colors[2:])}"
                     )
 
-            if variant_name == MODEL_VARIANT:
-                true_variant_name = MODEL_VARIANT
+            if variant_name.startswith(MODEL_VARIANT):
+                # Keep the splash in the name: "BG 🤖 Model Build (Splash R)".
+                splash = true_variant_name if true_variant_name.startswith("Splash") else ""
+                extra = [x for x in (variant_name[len(MODEL_VARIANT):].strip(" ()"), splash) if x]
+                true_variant_name = MODEL_VARIANT + (f" ({', '.join(extra)})" if extra else "")
 
             opt_deck, opt_sb, opt_note = deck, sb, ""
 
@@ -571,7 +575,8 @@ def suggest_deck(
             }
 
             full_label = f"{true_arch_key} {true_variant_name} [Est: {variant_data['record']}] (Power: {score:.0f})"
-            if "Incomplete Deck" not in breakdown:
+            # The model's builds are always offered, even when land-padded.
+            if "Incomplete Deck" not in breakdown or true_variant_name.startswith(MODEL_VARIANT):
                 all_variants.append((full_label, variant_data))
             else:
                 incomplete_variants.append((full_label, variant_data))
@@ -632,10 +637,9 @@ def suggest_deck(
                 soup_arch_key,
             )
 
-        model_deck, model_colors = build_variant_model(taken_cards, event_type)
-        if model_deck:
+        for model_name, model_deck, model_colors in build_model_variants(taken_cards, event_type):
             process_variant(
-                MODEL_VARIANT,
+                model_name,
                 model_deck,
                 get_sideboard(taken_cards, model_deck),
                 model_colors,
@@ -693,7 +697,7 @@ def suggest_deck(
             cards_diff = 40 - max_overlap
             # The model's build is always shown, even when it nearly matches a
             # heuristic deck: agreement between the two is itself useful.
-            is_model = data.get("label_prefix") == MODEL_VARIANT
+            is_model = str(data.get("label_prefix", "")).startswith(MODEL_VARIANT)
             keep = True if (is_top_deck or is_best_safe or is_model) else False
 
             if not keep:
@@ -704,11 +708,13 @@ def suggest_deck(
                 else:
                     keep = True if score >= best_score - 50.0 else False
 
+            if keep and not is_model and sum(
+                not str(d.get("label_prefix", "")).startswith(MODEL_VARIANT) for _, d in filtered_list
+            ) >= 10:
+                keep = False
             if keep:
                 filtered_list.append((label, data))
                 accepted_signatures.append(sig)
-                if len(filtered_list) >= 10:
-                    break
 
         final_list = filtered_list
         best_safe_idx = select_safe_deck_index(final_list)
@@ -744,6 +750,13 @@ def suggest_deck(
                     final_list.insert(1, final_list.pop(best_safe_idx))
                 # Otherwise leave it in its natural position: still shown and
                 # labeled, but not masquerading as a top pick.
+
+        # The model's builds come right after the top deck, whatever their
+        # heuristic score: they answer a different question (what winning
+        # players keep from a pool like this), so they shouldn't be buried.
+        models = [v for v in final_list if str(v[1].get("label_prefix", "")).startswith(MODEL_VARIANT)]
+        others = [v for v in final_list if v not in models]
+        final_list = others[:1] + models + others[1:]
 
         for label, data in final_list:
             sorted_decks[label] = data
@@ -786,9 +799,9 @@ def build_variant_consistency(pool, colors, metrics, tier_data=None):
     return stack_cards(spells + non_basic_lands + basics)
 
 
-def build_variant_model(pool, event_type="PremierDraft"):
+def build_variant_model(pool, event_type="PremierDraft", allowed=None, min_spells=None):
     """Deck chosen by the trained deck model (if one exists for the pool's set),
-    with basics from the regular mana base math."""
+    with basics from the regular mana base math. allowed limits the cards it may pick."""
     from src.advisor.deck_model import load_deck_model
 
     sets = [c.get("set") for c in pool if c.get("set")]
@@ -796,7 +809,11 @@ def build_variant_model(pool, event_type="PremierDraft"):
     if model is None:
         return None, []
 
-    chosen = model.build(pool)
+    chosen = model.build(pool, allowed, min_spells) if min_spells else model.build(pool, allowed)
+    lands = [c for c in chosen if "Land" in c.get("types", [])]
+    if min_spells and lands:
+        # min_spells means nonland cards: nonbasic lands the model picks don't count.
+        chosen = model.build(pool, allowed, min_spells + sum(c.get("count", 1) for c in lands))
     spells = [c for c in chosen if "Land" not in c.get("types", [])]
     lands = [c for c in chosen if "Land" in c.get("types", [])]
     if sum(c.get("count", 1) for c in spells) < 15:
@@ -810,6 +827,50 @@ def build_variant_model(pool, event_type="PremierDraft"):
         forced_count=40 - sum(c.get("count", 1) for c in chosen),
     )
     return stack_cards(chosen + basics), colors
+
+
+MAX_MODEL_PAIRS = 2
+# A per-pair build is offered when it plays other colors than the builds already
+# offered, or swaps at least this many cards; and only with a real 40 (no land padding).
+MODEL_VARIANT_MIN_DIFF = 5
+MODEL_PAIR_MIN_SPELLS = 20
+MODEL_PAIR_SPELLS = 23
+
+
+def _deck_sig(deck):
+    return Counter({c["name"]: c.get("count", 1) for c in deck if "Land" not in c.get("types", [])})
+
+
+def build_model_variants(pool, event_type="PremierDraft"):
+    """The model's overall build plus, when the pool supports more than one
+    plan, its build for each other strong color pair: [(name, deck, colors)]."""
+    from src.advisor.deck_model import load_deck_model
+
+    main, colors = build_variant_model(pool, event_type)
+    out = [(MODEL_VARIANT, main, colors)] if main else []
+    sets = [c.get("set") for c in pool if c.get("set")]
+    model = load_deck_model(max(set(sets), key=sets.count), event_type) if sets else None
+    if model is None:
+        return out
+    offered = [(_deck_sig(d), set(c)) for _, d, c in out]
+    for pair, _strength in model.pair_strength(pool)[:MAX_MODEL_PAIRS + 1]:
+        def allowed(card, pair=pair):
+            card_colors = set(card.get("colors") or [])
+            return card_colors <= set(pair)
+
+        # Inside one pair the model expects fewer of its cards, so fill to a
+        # normal 23 spells instead of padding with lands.
+        deck, deck_colors = build_variant_model(pool, event_type, allowed, MODEL_PAIR_SPELLS)
+        sig = _deck_sig(deck or [])
+        if sum(sig.values()) < MODEL_PAIR_MIN_SPELLS:
+            continue
+        if any(set(deck_colors) == cols and sum((sig - s).values()) < MODEL_VARIANT_MIN_DIFF for s, cols in offered):
+            continue
+        out.append((f"{MODEL_VARIANT} (alt)", deck, deck_colors))
+        offered.append((sig, set(deck_colors)))
+        if len(out) > MAX_MODEL_PAIRS:
+            break
+    return out
 
 
 def build_variant_greedy(pool, colors, metrics, tier_data=None):

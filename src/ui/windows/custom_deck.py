@@ -98,6 +98,53 @@ class CustomDeckPanel(ttk.Frame):
         self._clear_sample_hand()
         self.notebook.select(self.builder_tab)
 
+    BASIC_COLORS = {"Plains": "W", "Island": "U", "Swamp": "B", "Mountain": "R", "Forest": "G", "Wastes": ""}
+
+    def _arena_card(self, grp_id):
+        """Card dict for an Arena id; basics the dataset doesn't list are named by Arena's card DB."""
+        set_data = self.draft.set_data
+        found = set_data.get_data_by_id([str(grp_id)])
+        name = found[0].get(constants.DATA_FIELD_NAME, "") if found else ""
+        if found and name and not str(name).isdigit():
+            return found[0]
+        resolve = getattr(set_data, "_resolve_unknown_id", None)
+        try:
+            name = resolve(str(grp_id)) if resolve else ""
+        except Exception:
+            name = ""
+        basic = str(name or "").removeprefix("Snow-Covered ")
+        if basic in self.BASIC_COLORS:
+            color = self.BASIC_COLORS[basic]
+            return {"name": basic, "cmc": 0, "types": ["Land", "Basic"], "colors": [color] if color else []}
+        return None
+
+    def load_arena_deck(self):
+        """Load the last deck you clicked Done on in Arena and analyze it."""
+        from src.deck_record import latest_submitted_deck, classify_deck, load_snapshots, SOURCE_NAMES
+
+        player_log = self.configuration.settings.arena_log_location
+        paths = [os.path.join(os.path.dirname(player_log), "Player-prev.log"), player_log] if player_log else []
+        deck = latest_submitted_deck(paths)
+        if not deck:
+            self.lbl_arena.config(text="No deck in the Arena log yet: build it in Arena and click Done.")
+            return
+        main = [c for c in (self._arena_card(g) for g in deck["main"]) if c]
+        sb = [c for c in (self._arena_card(g) for g in deck["sideboard"]) if c]
+        missing = len(deck["main"]) - len(main)
+        self.import_deck(stack_cards(main), stack_cards(sb))
+        source = classify_deck([c.get(constants.DATA_FIELD_NAME, "") for c in main], load_snapshots())
+        note = f"Arena deck, {len(main)} cards"
+        if missing:
+            note += f" ({missing} unknown)"
+        if source:
+            note += f" · {SOURCE_NAMES[source['source']]}"
+            if source["source"] != "own" and source["changes"]:
+                note += f" +{source['changes']}"
+        self.lbl_arena.config(text=note)
+        self._render_deck_stats()
+        if len(main) >= 40:
+            self._run_simulation()
+
     def refresh(self):
         """Appends newly drafted cards to the sideboard."""
         raw_pool = self.draft.retrieve_taken_cards()
@@ -197,6 +244,16 @@ class CustomDeckPanel(ttk.Frame):
             self.header, text="Copy Deck", width=10, command=self._copy_to_clipboard
         )
         self.btn_copy.pack(side="right", padx=Theme.scaled_val(5))
+
+        # Build in Arena, click Done, then pull that deck in here to analyze it.
+        ttk.Button(
+            self.header,
+            text="📥 Load Arena deck",
+            bootstyle="warning-outline",
+            command=self.load_arena_deck,
+        ).pack(side="right", padx=Theme.scaled_val(5))
+        self.lbl_arena = ttk.Label(self.header, text="", font=Theme.scaled_font(9), bootstyle="secondary")
+        self.lbl_arena.pack(side="right", padx=Theme.scaled_val(5))
 
         self.btn_sim = ttk.Button(
             self.header,
