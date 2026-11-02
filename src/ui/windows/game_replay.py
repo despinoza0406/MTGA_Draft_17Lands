@@ -14,6 +14,7 @@ from src import constants
 from src.ui.styles import Theme
 from src.ui.components import art_color, blend, HoverTip
 from src.ui.card_art import CardArt
+from src.match_history import event_label
 from src.game_review import BASIC_LAND_COLORS, GameLog, Finding, can_pay, LEVEL_SYMBOLS, LEVEL_HELP, KIND_HELP
 
 EVENT_TEXT = {
@@ -102,13 +103,15 @@ def castable_marks(snapshot: Dict, card: Callable[[int], Dict]) -> Dict[int, str
 def turn_summary(entry: Dict, name: Callable[[int], str]) -> str:
     """One short move-list line for a turn: lands, spells and damage to the other player."""
     active = entry.get("active")
-    parts, hits = [], 0
+    played, hits = {}, 0  # name -> times, in play order
     for event in entry.get("events", []):
         kind = event[0]
         if kind in ("land", "cast") and event[1] == active:
-            parts.append(name(event[2]))
+            card = name(event[2])
+            played[card] = played.get(card, 0) + 1
         elif kind == "damage" and event[1] == active and event[3] in ("you", "opp") and event[3] != active:
             hits += event[4]
+    parts = [f"{card} ×{times}" if times > 1 else card for card, times in played.items()]
     if hits:
         parts.append(f"hits for {hits}")
     return " · ".join(parts) or "—"
@@ -119,11 +122,14 @@ def move_rows(game: GameLog, name: Callable[[int], str], flagged_turns) -> List[
     rows = {}
     for entry in game.timeline:
         rnd = (entry["turn"] + 1) // 2
-        row = rows.setdefault(rnd, {"round": rnd, "you": "", "opp": "", "you_turn": None, "opp_turn": None})
+        row = rows.setdefault(rnd, {"round": rnd, "you": "", "opp": "", "you_turn": None, "opp_turn": None,
+                                    "turns": ""})
         side = "you" if entry["active"] == "you" else "opp"
         mark = "?! " if entry["turn"] in flagged_turns else ""
         row[side] = mark + turn_summary(entry, name)
         row[f"{side}_turn"] = entry["turn"]
+        # The game's own turn numbers, as findings and the life chart use them.
+        row["turns"] = "–".join(str(t) for t in sorted(filter(None, (row["you_turn"], row["opp_turn"]))))
     return [rows[k] for k in sorted(rows)]
 
 
@@ -145,8 +151,9 @@ class GameReplayWindow(tkinter.Toplevel):
         self.flagged_turns = {f.turn for f in findings if f.level == "review" and f.turn}
 
         result = {True: "Won", False: "Lost", None: "?"}[game.won]
-        self.subtitle = f"{game.event or 'Game'} · {result.lower()} on the {'play' if game.on_play else 'draw'}"
-        self.title(f"Replay — {game.event or 'game'} — {result} on the {'play' if game.on_play else 'draw'}")
+        event = event_label(game.event)
+        self.subtitle = f"{event or 'Game'} · {result.lower()} on the {'play' if game.on_play else 'draw'}"
+        self.title(f"Replay — {event or 'game'} — {result} on the {'play' if game.on_play else 'draw'}")
         self.geometry(f"{Theme.scaled_val(1360)}x{Theme.scaled_val(860)}")
         self.configure(bg=Theme.BG_PRIMARY)
         self._build_ui()
@@ -203,7 +210,7 @@ class GameReplayWindow(tkinter.Toplevel):
         side = ttk.Frame(body, padding=(pad, 0, pad, 0))
         body.add(side, weight=1)
         self.moves = ttk.Treeview(side, columns=("n", "you", "opp"), show="headings", height=12, selectmode="browse")
-        for col, title, width in (("n", "#", 30), ("you", "YOU", 150), ("opp", "OPPONENT", 150)):
+        for col, title, width in (("n", "TURN", 52), ("you", "YOU", 150), ("opp", "OPPONENT", 150)):
             self.moves.heading(col, text=title)
             self.moves.column(col, width=Theme.scaled_val(width), stretch=col != "n", anchor="w")
         self.moves.pack(fill="both", expand=True)
@@ -214,7 +221,7 @@ class GameReplayWindow(tkinter.Toplevel):
         self._move_rows = move_rows(self.game, self.name, self.flagged_turns)
         for i, row in enumerate(self._move_rows):
             tags = ("flag",) if {row["you_turn"], row["opp_turn"]} & self.flagged_turns else ()
-            self.moves.insert("", "end", iid=str(i), values=(row["round"], row["you"], row["opp"]), tags=tags)
+            self.moves.insert("", "end", iid=str(i), values=(row["turns"], row["you"], row["opp"]), tags=tags)
 
         self.txt_turn = tkinter.Text(side, wrap="word", height=12, font=Theme.scaled_font(10), relief="flat", borderwidth=0)
         self.txt_turn.pack(fill="x", pady=(pad, pad))

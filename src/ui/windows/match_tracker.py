@@ -15,12 +15,13 @@ REFRESH_MS = 1000
 
 
 class MatchTrackerWindow(tkinter.Toplevel):
-    def __init__(self, parent, app_context, on_close):
+    def __init__(self, parent, app_context, on_close, tracker=None):
         super().__init__(parent)
         self.app = app_context
         self.on_close = on_close
         self.title("Match Tracker")
-        self.geometry(f"{Theme.scaled_val(320)}x{Theme.scaled_val(620)}")
+        saved = getattr(self.app.configuration.settings, "tracker_geometry", "")
+        self.geometry(saved or f"{Theme.scaled_val(320)}x{Theme.scaled_val(620)}")
         self.attributes("-topmost", True)
         self.protocol("WM_DELETE_WINDOW", self.close)
         # ttk styles are global and already active; only the window background
@@ -28,9 +29,14 @@ class MatchTrackerWindow(tkinter.Toplevel):
         self.configure(bg=Theme.BG_PRIMARY)
         Theme.bind_theme_change(self, lambda e: self.configure(bg=Theme.BG_PRIMARY), application_wide=False)
 
-        self.tracker = GameTracker()
-        self.tailer = LogTailer(self.app.configuration.settings.arena_log_location, self.tracker)
-        self.tailer.start()
+        # The app follows the log all the time and shares its tracker; a window
+        # opened without one reads the log itself.
+        self.tailer = None
+        self.tracker = tracker
+        if self.tracker is None:
+            self.tracker = GameTracker()
+            self.tailer = LogTailer(self.app.configuration.settings.arena_log_location, self.tracker)
+            self.tailer.start()
         self._cards = {}
 
         self._build_ui()
@@ -125,7 +131,12 @@ class MatchTrackerWindow(tkinter.Toplevel):
         self._refresh_job = self.after(REFRESH_MS, self._refresh)
 
     def close(self):
-        self.tailer.stop()
+        try:
+            self.app.configuration.settings.tracker_geometry = self.geometry()
+        except Exception:
+            pass
+        if self.tailer:
+            self.tailer.stop()
         if getattr(self, "_refresh_job", None):
             self.after_cancel(self._refresh_job)
         self.destroy()

@@ -7,6 +7,7 @@ Calculates and displays Pool Grades, Steals, Reaches, and Synergies.
 import tkinter
 from tkinter import ttk
 import threading
+from collections import Counter
 from src import constants
 from src.ui.styles import Theme
 from src.utils import open_file
@@ -31,7 +32,7 @@ class DraftRecapScreen(ttk.Frame):
 
     def _create_stat_box(self, parent, title, text_var_name):
         frame = ttk.Labelframe(parent, text=title, padding=Theme.scaled_val(8))
-        lbl = ttk.Label(frame, text="", font=Theme.scaled_font(9), justify="left")
+        lbl = ttk.Label(frame, text="", font=Theme.scaled_font(9), justify="left", anchor="nw")
         lbl.pack(anchor="nw", fill="both", expand=True)
         setattr(self, text_var_name, lbl)
         self._dynamic_wrap_labels.append(lbl)
@@ -339,11 +340,13 @@ class DraftRecapScreen(ttk.Frame):
         )
 
         # 3. BEST CARDS
+        copies = Counter(c.get("name", "Unknown") for c in top_23)
+        best = list({c.get("name", "Unknown"): c for c in reversed(top_23)}.values())[::-1]
         best_text = "".join(
-            [
-                f"• {c.get('name', 'Unknown')} ({get_gihwr(c):.1f}%)\n"
-                for c in top_23[:6]
-            ]
+            f"• {c.get('name', 'Unknown')}"
+            + (f" ×{copies[c.get('name', 'Unknown')]}" if copies[c.get("name", "Unknown")] > 1 else "")
+            + f" ({get_gihwr(c):.1f}%)\n"
+            for c in best[:6]
         )
         self.lbl_recap_best.config(text=best_text)
 
@@ -365,7 +368,9 @@ class DraftRecapScreen(ttk.Frame):
             if "Basic" in c.get("types", []) or name in constants.BASIC_LANDS:
                 continue
 
-            pack, pick = (i // cards_per_pack) + 1, (i % cards_per_pack) + 1
+            # Pick Two takes two cards per pick, so a pack of 14 cards is 7 picks.
+            per_pick = 2 if "PickTwo" in (event_type or "") else 1
+            pack, pick = (i // cards_per_pack) + 1, (i % cards_per_pack) // per_pick + 1
             gihwr, alsa, ata = (
                 get_gihwr(c),
                 float(c.get("deck_colors", {}).get("All Decks", {}).get("alsa", 0.0)),

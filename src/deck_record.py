@@ -201,22 +201,28 @@ SAME_DRAFT_SHARED = 12
 def group_runs(entries: List[tuple], min_shared: int = SAME_DRAFT_SHARED) -> List[List[int]]:
     """Split games (newest first) into runs from the same draft or event.
 
-    entries: (event, deck card names) per game. A new run starts when the
-    event changes or, for Limited, when the deck shares too few cards with
-    the run's first deck. Arena reuses one event name for every draft of a
-    format, so the deck is what tells two drafts apart."""
+    entries: (event, deck card names) per game. Other games run together while
+    the event stays the same. A Limited game joins the draft whose deck shares
+    enough cards with it, even across games of another event played in between
+    (a few Ladder games mid-draft); Arena reuses one event name for every draft
+    of a format, so the deck is what tells two drafts apart."""
     runs: List[List[int]] = []
-    anchor = None
+    anchors: List[tuple] = []  # (event, deck of the run's first game) per run
     for i, (event, names) in enumerate(entries):
         deck = Counter(n for n in names if n and not _is_basic(n))
-        if runs and anchor is not None and event == anchor[0]:
-            limited = any(h in (event or "") for h in ("Draft", "Sealed"))
-            shared = sum((deck & anchor[1]).values())
-            if not limited or not deck or not anchor[1] or shared >= min_shared:
-                runs[-1].append(i)
-                continue
-        runs.append([i])
-        anchor = (event, deck)
+        limited = any(h in (event or "") for h in ("Draft", "Sealed"))
+        target = None
+        if limited and deck:
+            target = next((r for r in reversed(range(len(runs)))
+                           if anchors[r][0] == event and anchors[r][1]
+                           and sum((deck & anchors[r][1]).values()) >= min_shared), None)
+        elif runs and anchors[-1][0] == event and (not limited or not anchors[-1][1]):
+            target = len(runs) - 1
+        if target is None:
+            runs.append([i])
+            anchors.append((event, deck))
+        else:
+            runs[target].append(i)
     return runs
 
 

@@ -7,7 +7,7 @@ from typing import Callable
 
 from src.tier_list import TierList, TIER_FOLDER, TIER_FILE_PREFIX, TIER_URL_17LANDS
 from src.ui.styles import Theme
-from src.ui.components import DynamicTreeviewManager
+from src.ui.components import DynamicTreeviewManager, empty_hint
 
 
 class TierListWindow(ttk.Frame):
@@ -123,6 +123,8 @@ class TierListWindow(ttk.Frame):
             filtered_files.append((f_set, f_label, f_date, f_name))
 
         filtered_files.sort(key=lambda x: x[2], reverse=True)
+        empty_hint(self.table, "No tier lists yet. Paste a 17Lands tier list link below\n"
+                               "to see its grades next to every card.", not filtered_files)
 
         for idx, f in enumerate(filtered_files):
             tag = "bw_odd" if idx % 2 == 0 else "bw_even"

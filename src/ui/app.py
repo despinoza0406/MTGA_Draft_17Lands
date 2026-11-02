@@ -8,6 +8,7 @@ to the AppLayoutManager and application lifecycle to the AppController.
 import logging
 import tkinter
 import os
+import time
 from typing import Dict, Optional
 
 from src import constants
@@ -115,6 +116,7 @@ class DraftApp:
 
         self._loading = True
         self._initialized = True
+        self._start_game_watch()
 
     # =========================================================================
     # FACADE UI PROPERTIES (Preserves backward compatibility with other files)
@@ -277,8 +279,39 @@ class DraftApp:
         from src.ui.windows.match_tracker import MatchTrackerWindow
 
         self.match_tracker_window = MatchTrackerWindow(
-            self.root, self, lambda: setattr(self, "match_tracker_window", None)
+            self.root, self, lambda: setattr(self, "match_tracker_window", None),
+            tracker=getattr(self, "game_tracker", None),
         )
+
+    # A game counts as starting now only if Arena wrote to its log this recently:
+    # reading an old log at launch can end on a game that never logged its end.
+    GAME_LOG_FRESH_SECONDS = 120
+    GAME_WATCH_MS = 1000
+
+    def _start_game_watch(self):
+        """Follows Arena's log all the time (one reader, shared with the tracker
+        window) and opens the match tracker when a game starts."""
+        from src.game_tracker import GameTracker, LogTailer
+
+        self.game_tracker = GameTracker()
+        self._game_tailer = LogTailer(self.configuration.settings.arena_log_location, self.game_tracker)
+        self._game_tailer.start()
+        self._auto_tracker_game = None
+        self.root.after(self.GAME_WATCH_MS, self._watch_game)
+
+    def _watch_game(self):
+        try:
+            snap = self.game_tracker.snapshot()
+            game = snap["game"] if snap["active"] else None
+            if game and game != self._auto_tracker_game:
+                self._auto_tracker_game = game  # once per game: closing it sticks until the next
+                path = self.configuration.settings.arena_log_location
+                fresh = os.path.exists(path) and time.time() - os.path.getmtime(path) < self.GAME_LOG_FRESH_SECONDS
+                if fresh and self.configuration.settings.auto_open_tracker:
+                    self._open_match_tracker()
+        except Exception as e:
+            logger.warning(f"Game watch error: {e}")
+        self.root.after(self.GAME_WATCH_MS, self._watch_game)
 
     def _open_grades(self):
         if getattr(self, "grades_window", None):

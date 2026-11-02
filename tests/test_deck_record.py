@@ -89,4 +89,5 @@ def test_group_runs_splits_drafts_with_the_same_event_name():
         ("Ladder", ["B"]),
         ("PickTwoDraft_FRA", ub),
     ]
-    assert group_runs(entries) == [[0, 1], [2, 3], [4, 5], [6]]
+    # The UB draft's last game joins it across the Ladder games in between.
+    assert group_runs(entries) == [[0, 1], [2, 3, 6], [4, 5]]

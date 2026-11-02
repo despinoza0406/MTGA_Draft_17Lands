@@ -96,6 +96,7 @@ class TakenCardsPanel(ttk.Frame):
             self.current_display_list = stack_cards(filtered)
 
         self._update_filter_status()
+        self._label_win_rate_columns()
 
         (
             self._update_table_view()
@@ -199,6 +200,24 @@ class TakenCardsPanel(ttk.Frame):
         if key == constants.FILTER_OPTION_FOLLOW:
             return self.configuration.settings.deck_filter
         return key
+
+    def _label_win_rate_columns(self):
+        """Win rate headings name the archetype they're read from ("GIH WR · UB"),
+        so a "-" on an off-color card reads as "not played in UB", not missing data."""
+        tree = self.table
+        labels = getattr(tree, "base_labels", None)
+        if not labels:
+            return
+        if not hasattr(self, "_plain_labels"):
+            self._plain_labels = dict(labels)
+        lane = "" if self.active_color == constants.FILTER_OPTION_ALL_DECKS else f" · {self.active_color}"
+        for col, plain in self._plain_labels.items():
+            if "WR" not in plain or col not in labels:
+                continue
+            labels[col] = plain + lane
+            heading = tree.heading(col, "text")
+            arrow = heading[len(heading.rstrip("▲▼ ")):] if heading.endswith(("▲", "▼")) else ""
+            tree.heading(col, text=labels[col] + arrow)
 
     def _update_filter_status(self):
         """Names the archetype the stat columns currently reflect. Blank when

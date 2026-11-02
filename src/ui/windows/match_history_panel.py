@@ -12,7 +12,7 @@ from tkinter import ttk
 from PIL import Image, ImageDraw, ImageTk
 from src import constants
 from src.ui.styles import Theme
-from src.match_history import update_history, summarize, event_format
+from src.match_history import update_history, summarize, event_format, event_label, FORMAT_NAMES
 from src.game_review import (
     GameLog,
     update_reviews,
@@ -37,6 +37,12 @@ from src.ui.card_art import CardArt
 logger = logging.getLogger(__name__)
 
 LIMITED_HINTS = ("Draft", "Sealed")
+
+
+def _limited(event):
+    return any(h in (event or "") for h in LIMITED_HINTS)
+
+
 COLUMN_HELP = {
     "#0": "The three best-rated spells you cast, then your life minus the opponent's, turn by turn "
           "(blue line: won, orange: lost).",
@@ -197,7 +203,7 @@ class MatchHistoryPanel(ttk.Frame):
                 "",
                 "end",
                 values=(
-                    row["format"],
+                    FORMAT_NAMES.get(row["format"], row["format"]),
                     row["set"] or "-",
                     constants.COLOR_NAMES_DICT.get(colors, colors) if colors else "-",
                     f"{row['wins']}-{row['losses']}",
@@ -249,10 +255,11 @@ class MatchHistoryPanel(ttk.Frame):
                     image=self._row_image(game, lookup, str(i)),
                     values=(
                         game.game_number,
-                        game.event or "-",
+                        event_label(game.event) or "-",
                         {True: "Win", False: "Loss", None: "?"}[game.won],
                         "Play" if game.on_play else "Draw",
-                        source_text(self._deck_sources[i]),
+                        # Only Limited decks have suggestions to come from.
+                        source_text(self._deck_sources[i]) if _limited(game.event) else "",
                         sum(f.level == "review" for f in findings),
                     ),
                 )
@@ -354,7 +361,7 @@ class MatchHistoryPanel(ttk.Frame):
         values = list(self.games_table.item(iid, "values"))
         values[-1] = f"★ {values[-1]}"
         self.games_table.item(iid, values=values, tags=("spotlight",))
-        self.lbl_spotlight.config(text=f"★ Review this one: game {game.game_number} of {game.event}. {reason}")
+        self.lbl_spotlight.config(text=f"★ Review this one: game {game.game_number} of {event_label(game.event) or game.event}. {reason}")
         self.spotlight.pack(fill="x", pady=Theme.scaled_val((0, 4)), before=self.games_table)
         if not self.games_table.selection():
             self.games_table.selection_set(iid)

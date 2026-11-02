@@ -59,6 +59,7 @@ class Settings(BaseModel):
 
     table_width: int = 270
     overlay_geometry: str = "300x600+50+50"
+    tracker_geometry: str = ""  # match tracker size and spot, kept between games
 
     main_window_geometry: str = "600x1080"
     paned_window_sash: int = 500
@@ -90,6 +91,7 @@ class Settings(BaseModel):
 
     # Core Feature Toggles
     always_on_top: bool = False
+    auto_open_tracker: bool = True  # open the match tracker when a game starts in Arena
     card_colors_enabled: bool = False
     draft_log_enabled: bool = True
     update_notifications_enabled: bool = True

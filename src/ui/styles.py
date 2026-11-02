@@ -158,6 +158,41 @@ class Theme:
         return cls.scaled_font(size, weight, family)
 
     @classmethod
+    def dark_title_bar(cls, window):
+        """Windows 10/11 draw a white title bar over a dark palette unless asked
+        not to; match it to the window's background."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+
+            r, g, b = (v / 257 for v in window.winfo_rgb(cls.BG_PRIMARY))
+            dark = ctypes.c_int(1 if 0.299 * r + 0.587 * g + 0.114 * b < 128 else 0)
+            hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+            # 20 = DWMWA_USE_IMMERSIVE_DARK_MODE; Windows 10 before 20H1 used 19.
+            for attribute in (20, 19):
+                if ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                    hwnd, attribute, ctypes.byref(dark), ctypes.sizeof(dark)
+                ) == 0:
+                    break
+        except Exception as e:
+            logger.debug(f"Title bar color not set: {e}")
+
+    @classmethod
+    def _title_bars(cls, root):
+        """The main window, open windows, and every window opened later."""
+        windows = [root] + [w for w in root.winfo_children() if isinstance(w, tkinter.Toplevel)]
+        for window in windows:
+            cls.dark_title_bar(window)
+        if not getattr(root, "_title_bar_hook", False):
+            root._title_bar_hook = True
+            root.bind_class(
+                "Toplevel", "<Map>",
+                lambda e: cls.dark_title_bar(e.widget) if isinstance(e.widget, tkinter.Toplevel) else None,
+                add="+",
+            )
+
+    @classmethod
     def is_arena(cls) -> bool:
         return cls.BG_PRIMARY == cls.ARENA["bg"]
 
@@ -561,5 +596,6 @@ class Theme:
         if not is_custom_loaded and palette == "Arena":
             cls._style_arena(style, main_font_size)
         root.configure(bg=cls.BG_PRIMARY)
+        cls._title_bars(root)
         cls.generation += 1
         root.event_generate("<<ThemeChanged>>")

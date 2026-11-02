@@ -208,20 +208,20 @@ class CustomDeckPanel(ttk.Frame):
         self.basics_frame.pack(side="left", padx=Theme.scaled_val((15, 2)))
 
         self.basic_buttons = {}
-        basics = [
-            ("W", "Plains", "light"),
-            ("U", "Island", "info"),
-            ("B", "Swamp", "dark"),
-            ("R", "Mountain", "danger"),
-            ("G", "Forest", "success"),
-        ]
-        for sym, name, style in basics:
-            btn = ttk.Button(
+        basics = [("W", "Plains"), ("U", "Island"), ("B", "Swamp"), ("R", "Mountain"), ("G", "Forest")]
+        for sym, name in basics:
+            # Plain Tk buttons in mana colors: theme roles like "success" are not
+            # green in every palette (Arena's is blue), and ttk ignores a background.
+            color = Theme.MANA[sym]
+            btn = tkinter.Button(
                 self.basics_frame,
                 text=f"{sym}: 0",
-                bootstyle=style,
                 width=5,
-                padding=Theme.scaled_val(5),
+                bg=color, fg="#121214", activebackground="#FFFFFF", activeforeground="#121214",
+                relief="flat", bd=0, highlightthickness=0, cursor="hand2",
+                autostyle=False,  # ttkbootstrap would repaint it in the theme color
+                font=Theme.scaled_font(9, "bold"),
+                padx=Theme.scaled_val(4), pady=Theme.scaled_val(5),
             )
 
             # Standard Add (Left Click)
@@ -237,7 +237,7 @@ class CustomDeckPanel(ttk.Frame):
             )
             btn.bind("<Control-ButtonRelease-1>", lambda e: "break")
 
-            btn.pack(side="left")
+            btn.pack(side="left", padx=(0, Theme.scaled_val(2)))
             self.basic_buttons[name] = btn
 
         self.btn_copy = ttk.Button(

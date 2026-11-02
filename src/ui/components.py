@@ -1779,6 +1779,19 @@ class ColorFilterSelector(ttk.Frame):
         self.status_label.config(text=text)
 
 
+def empty_hint(widget, text: str, show: bool):
+    """A muted line centered over an empty table, saying how to fill it."""
+    label = getattr(widget, "_empty_hint", None)
+    if label is None:
+        label = ttk.Label(widget, text=text, justify="center", foreground=Theme.TEXT_MUTED,
+                          font=Theme.scaled_font(10))
+        widget._empty_hint = label
+    if show:
+        label.place(relx=0.5, rely=0.3, anchor="center")
+    else:
+        label.place_forget()
+
+
 class HoverTip:
     """Small explanation box that follows the mouse; one per app at a time."""
 

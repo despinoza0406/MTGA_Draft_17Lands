@@ -108,10 +108,12 @@ def test_turn_summary_and_move_rows():
     assert turn_summary(t1, name) == "Island"
     assert turn_summary(t3, name) == "Gallia · hits for 2"
     assert turn_summary({"turn": 4, "active": "opp", "events": []}, name) == "—"
+    twice = {"turn": 5, "active": "you", "events": [("cast", "you", 2), ("land", "you", 1), ("cast", "you", 2)]}
+    assert turn_summary(twice, name) == "Gallia ×2 · Island"
 
     game = GameLog(match_id="m", game_number=1, timeline=[t1, t2, t3])
     rows = move_rows(game, name, {3})
-    assert [(r["round"], r["you"], r["opp"]) for r in rows] == [
-        (1, "Island", "Forest · Beast"),
-        (2, "?! Gallia · hits for 2", ""),
+    assert [(r["round"], r["turns"], r["you"], r["opp"]) for r in rows] == [
+        (1, "1–2", "Island", "Forest · Beast"),
+        (2, "3", "?! Gallia · hits for 2", ""),
     ]

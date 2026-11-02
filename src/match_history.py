@@ -58,6 +58,20 @@ def event_format(event_name: str):
     return event_name, ""
 
 
+FORMAT_NAMES = {"PickTwoDraft": "Pick Two", "QuickDraft": "Quick Draft", "PremierDraft": "Premier Draft",
+                "TradDraft": "Traditional Draft", "TradSealed": "Traditional Sealed"}
+
+
+def event_label(event_name: str) -> str:
+    """'PickTwoDraft_FRA_20260929' -> 'Pick Two · FRA'; others as Arena names them."""
+    if not event_name:
+        return ""
+    fmt, set_code = event_format(event_name)
+    if not set_code:
+        return event_name
+    return f"{FORMAT_NAMES.get(fmt, fmt)} · {set_code}"
+
+
 def parse_log(text: str) -> Dict:
     """Returns the user's id, finished matches, and the latest deck per event."""
     client_ids = set(re.findall(r'"clientId":\s*"([^"]+)"', text))

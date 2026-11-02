@@ -7,7 +7,7 @@ import tkinter
 from tkinter import ttk
 from src import constants
 from src.ui.styles import Theme
-from src.ui.components import DynamicTreeviewManager, AutocompleteEntry, CardToolTip
+from src.ui.components import DynamicTreeviewManager, AutocompleteEntry, CardToolTip, empty_hint
 from src.card_logic import format_win_rate, row_color_tag
 
 
@@ -109,6 +109,8 @@ class ComparePanel(ttk.Frame):
 
         for item in t.get_children():
             t.delete(item)
+        empty_hint(t, "Type a card above and press Enter to compare cards side by side.\n"
+                      "Or right-click a card anywhere and choose Compare.", not self.compare_list)
 
         for idx, card in enumerate(self.compare_list):
             row_values = []
