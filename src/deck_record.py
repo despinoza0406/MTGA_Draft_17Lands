@@ -88,6 +88,12 @@ def latest_submitted_deck(log_paths: Iterable[str]) -> Optional[Dict]:
 
 # --- decks the tool suggested --------------------------------------------------------------
 
+def deck_label(label: str) -> str:
+    """'RG Consistent [Est: 4-3] (Power: 78)' -> 'RG Consistent'. The estimate and power
+    change on every rebuild; keyed without them, a rebuilt deck replaces its old entry."""
+    return label.split(" [", 1)[0].split(" (Power", 1)[0].strip()
+
+
 def _names(cards: List[Dict]) -> List[str]:
     out = []
     for c in cards or []:
@@ -124,10 +130,11 @@ def save_suggestions(pool: List[Dict], decks: Dict[str, List[Dict]], event: str 
         snapshots.append(snap)
     snap["saved"] = datetime.now().isoformat(timespec="minutes")
     snap["event"] = event or snap.get("event", "")
+    snap["decks"] = {deck_label(k): v for k, v in snap.get("decks", {}).items()}
     for label, cards in decks.items():
         names = _names(cards)
         if names:
-            snap["decks"][label] = sorted(names)
+            snap["decks"][deck_label(label)] = sorted(names)
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(snapshots[-MAX_SNAPSHOTS:], f, indent=1)

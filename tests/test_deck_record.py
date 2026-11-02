@@ -48,7 +48,8 @@ def test_suggestions_merge_per_pool_and_classify(tmp_path):
     model = cards(*[f"C{i}" for i in range(23)], "Forest")
     other = cards(*[f"C{i}" for i in range(7, 30)])
     save_suggestions(pool, {"🤖 Model Build": model}, "E", path)
-    save_suggestions(pool, {"RG Consistent": other}, "E", path)
+    save_suggestions(pool, {"RG Consistent [Est: 4-3] (Power: 77)": other}, "E", path)
+    save_suggestions(pool, {"RG Consistent [Est: 5-3] (Power: 78)": other}, "E", path)  # rebuilt
     snaps = load_snapshots(path)
     assert len(snaps) == 1 and set(snaps[0]["decks"]) == {"🤖 Model Build", "RG Consistent"}
     assert "Forest" not in snaps[0]["pool"]

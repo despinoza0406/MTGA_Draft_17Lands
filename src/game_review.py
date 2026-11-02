@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 REVIEWS_FILE = os.path.join(constants.BASE_DIR, "Game_Reviews.json")
 MIN_BENCHMARK_GAMES = 300
 # Bump when GameLog gains fields, so stored games are re-recorded from the logs.
-RECORD_VERSION = 5
+RECORD_VERSION = 6
 LIFE_SWING_FOR_REMOVAL_CHECK = 4
 
 
@@ -226,8 +226,10 @@ class GameRecorder(GameTracker):
             self.attachments = {}
         if not self.current:
             return
-        if message.get("type") == "GREMessageType_ConnectResp" and self.deck:
-            self.current.deck = list(self.deck.elements())  # sideboarded deck for this game
+        # A reconnect mid-game resends the deck (sideboarded for this game). Once the game
+        # is over, the next ConnectResp is the next match's deck and must not replace it.
+        if message.get("type") == "GREMessageType_ConnectResp" and self.deck and not self.game_over:
+            self.current.deck = list(self.deck.elements())
 
         if message.get("type") == "GREMessageType_MulliganReq":
             if self._mulligan_prompts == 0:

@@ -166,6 +166,19 @@ def test_recorder_builds_turns_from_gre():
     assert "WON" in text and "T1 You: lands played 1" in text
 
 
+def test_next_match_deck_does_not_replace_the_finished_games_deck():
+    connect = lambda cards: gre({"type": "GREMessageType_ConnectResp", "systemSeatIds": [ME],
+                                 "connectResp": {"deckMessage": {"deckCards": cards}}})
+    lines = [
+        connect([1] * 40),
+        gre(state(turn={"turnNumber": 1, "activePlayer": ME})),
+        gre(state(stage="GameStage_GameOver", results=[{"scope": "MatchScope_Game", "winningTeamId": ME}])),
+        connect([2] * 60),  # the next match, e.g. a Ladder deck
+    ]
+    games = record_games("\n".join(lines))
+    assert len(games[0].deck) == 40
+
+
 def test_update_reviews_persists_finished_games_once(tmp_path):
     finished = "\n".join([
         gre(state(turn={"turnNumber": 1, "activePlayer": ME})),
