@@ -487,3 +487,36 @@ def test_unrated_card_is_not_called_weaker():
     turns = [TurnLog(10, True, lands_played=1, spells_cast=[24], end_hand=[20], lands_on_battlefield=5,
                      land_colors=["U"] * 5, life_start=20), TurnLog(11, False)]
     assert not weaker(review_game(game(turns), lk))
+
+
+def test_held_land_with_mana_to_spare_is_not_a_missed_drop():
+    bluff = TurnLog(15, True, end_hand=[3], end_hand_lands=1, lands_on_battlefield=6, end_untapped_lands=4)
+    assert not any(f.kind == "Missed land drop" for f in review_game(game([bluff]), lookup))
+    tapped_out = TurnLog(15, True, end_hand=[3], end_hand_lands=1, lands_on_battlefield=6, end_untapped_lands=0)
+    assert any(f.kind == "Missed land drop" for f in review_game(game([tapped_out]), lookup))
+
+
+def test_removal_cast_on_their_turn_is_not_held():
+    mine = TurnLog(21, True, lands_played=1, end_hand=[2], end_untapped_lands=2,
+                   end_untapped_colors=["R", "R"], opponent_creatures=6, life_end=13)
+    theirs = TurnLog(22, False, spells_cast=[2], life_end=1)
+    assert not any(f.kind == "Held removal" for f in review_game(game([mine, theirs]), lookup))
+
+
+def _combat_step(blocks, my_board, life=(13, 1)):
+    board = lambda life_total, mine, opp: {"life": [life_total, 4], "my_board": mine, "opp_board": opp}
+    attackers = [[7, 3, 3, False, None, None], [8, 2, 2, False, None, None]]
+    return {"turn": 22, "active": "opp", "events": [],
+            "start": board(life[0], my_board, attackers), "end": board(life[1], my_board, attackers),
+            "combat": {"attackers": [["opp", 7], ["opp", 8]], "blocks": blocks}}
+
+
+def test_no_blocks_with_a_safe_blocker_is_flagged():
+    wall = [[1, 4, 5, False, None, None]]  # survives either attacker
+    flagged = [f for f in review_game(game([], timeline=[_combat_step([], wall)]), lookup) if f.kind == "No blocks"]
+    assert len(flagged) == 1 and "went to 1 life" in flagged[0].text and "killed it" in flagged[0].text
+    # Blocked, only chump blockers, or not low on life: nothing to flag.
+    assert not [f for f in review_game(game([], timeline=[_combat_step([[1, [7]]], wall)]), lookup) if f.kind == "No blocks"]
+    small = [[1, 1, 1, False, None, None]]
+    assert not [f for f in review_game(game([], timeline=[_combat_step([], small)]), lookup) if f.kind == "No blocks"]
+    assert not [f for f in review_game(game([], timeline=[_combat_step([], wall, (20, 12))]), lookup) if f.kind == "No blocks"]

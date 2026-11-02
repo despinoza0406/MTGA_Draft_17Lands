@@ -491,7 +491,10 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
         top_cost = max((float(card(g).get("cmc", 0) or 0) for g in turn.end_hand
                         if "Land" not in card(g).get("types", [])), default=0)
         enough_lands = turn.lands_on_battlefield >= max(MISSED_LAND_ENOUGH, top_cost)
-        if turn.lands_played == 0 and turn.end_hand_lands > 0 and not enough_lands:
+        # Mana left over and nothing in hand that needs more: holding the land costs
+        # nothing now, and keeps a card in hand to bluff a trick.
+        spare = turn.end_untapped_lands > 0 and turn.lands_on_battlefield >= max(MISSED_LAND_SPARE, top_cost)
+        if turn.lands_played == 0 and turn.end_hand_lands > 0 and not (enough_lands or spare):
             findings.append(Finding(turn.number, "review", "No land played, but you had a land in hand.", "Missed land drop"))
 
         sources = turn.end_untapped_colors or [""] * turn.end_untapped_lands
@@ -615,7 +618,9 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
         ]
         if removal and turn.opponent_creatures:
             next_turn = next((t for t in game.turns if t.number == turn.number + 1), None)
-            if next_turn and turn.life_end is not None and next_turn.life_end is not None:
+            # Cast on their turn (say, mid-combat) is using it, not holding it.
+            used_next = next_turn is not None and any(g in next_turn.spells_cast for g in removal)
+            if next_turn and not used_next and turn.life_end is not None and next_turn.life_end is not None:
                 lost = turn.life_end - next_turn.life_end
                 if lost >= LIFE_SWING_FOR_REMOVAL_CHECK:
                     findings.append(
@@ -654,6 +659,8 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
                     "Behind on board")
         )
 
+    findings += missed_safe_blocks(game, card)
+
     swing = biggest_hit(game)
     if swing:
         turn, lost = swing
@@ -661,6 +668,67 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
 
     findings += deck_findings(game, card, benchmarks)
     return _merge_repeats(sorted(findings, key=lambda f: f.turn))
+
+
+# A no-block turn is worth a look when it leaves you this low after losing this much.
+NO_BLOCK_LOW_LIFE = 5
+NO_BLOCK_MIN_HIT = 4
+
+
+def _has_keyword(card: Dict, keyword: str) -> bool:
+    rules = _rules(card)
+    if any(str(k).lower() == keyword for k in rules.get("keywords") or []):
+        return True
+    # First line of rules text: "Flying", "Flying, vigilance", "Reach"...
+    first = str(rules.get("oracle_text", card.get("text", ""))).split("\n")[0].lower()
+    return keyword in [w.strip(" .") for w in first.split(",")]
+
+
+def missed_safe_blocks(game: GameLog, card) -> List[Finding]:
+    """Opponent's turns where you blocked nothing, took a big hit and ended low, while
+    one of your untapped creatures could block an attacker and survive. A blocker that
+    survives still attacks on your turn, so the life was given away for nothing
+    (unless you feared a trick)."""
+    out = []
+    for step in game.timeline or []:
+        combat, start, end = step.get("combat") or {}, step.get("start") or {}, step.get("end") or {}
+        if step.get("active") != "opp" or not combat.get("attackers") or combat.get("blocks"):
+            continue
+        try:
+            before, after = start["life"][0], end["life"][0]
+        except (KeyError, IndexError, TypeError):
+            continue
+        if before is None or after is None or before - after < NO_BLOCK_MIN_HIT or after > NO_BLOCK_LOW_LIFE:
+            continue
+        stats = {}
+        for entry in (end.get("opp_board") or []) + (start.get("opp_board") or []):  # start wins: stats as they attacked
+            stats[entry[0]] = (entry[1] or 0, entry[2] or 0)
+        attackers = [stats[g] + (g,) for who, g in combat["attackers"] if who == "opp" and g in stats]
+        found = None
+        for mine in start.get("my_board") or []:
+            grp, power, toughness, tapped = mine[0], mine[1] or 0, mine[2] or 0, mine[3]
+            if tapped or toughness <= 0:
+                continue
+            reach = _has_keyword(card(grp), "flying") or _has_keyword(card(grp), "reach")
+            for a_power, a_tough, a_grp in sorted(attackers, reverse=True):
+                if a_power < toughness and (reach or not _has_keyword(card(a_grp), "flying")):
+                    found = (grp, power, toughness, a_grp, a_power, a_tough)
+                    break
+            if found:
+                break
+        if not found:
+            continue
+        grp, power, toughness, a_grp, a_power, a_tough = found
+        name = lambda g: card(g).get(constants.DATA_FIELD_NAME) or f"#{g}"
+        kills = " and killed it" if power >= a_tough else ""
+        out.append(Finding(
+            step["turn"], "review",
+            f"No blocks: you took {before - after} and went to {after} life. {name(grp)} ({power}/{toughness}) "
+            f"could have blocked {name(a_grp)} ({a_power}/{a_tough}), survived{kills}, and still attacked next turn. "
+            f"Unless you feared a trick, that was free life.",
+            "No blocks",
+        ))
+    return out
 
 
 def _merge_repeats(findings: List[Finding]) -> List[Finding]:
@@ -683,6 +751,7 @@ def _merge_repeats(findings: List[Finding]) -> List[Finding]:
 
 
 MISSED_LAND_ENOUGH = 7
+MISSED_LAND_SPARE = 5
 # Flags that tend to repeat every turn of a board stall; the rest stay per turn.
 REPEATABLE_KINDS = ("Risky attack", "No attack into an empty board", "Missed land drop", "Unused mana",
                     "Unused mana held for instants")
@@ -832,10 +901,11 @@ KIND_HELP = {
     "Held a castable creature": "A creature stayed in hand for several turns while you could pay for it.",
     "Weaker card cast first": "You cast a lower-rated card (17Lands GIH win rate) while a better one you could also pay for stayed in hand. Card draw spells are skipped.",
     "Risky attack": "After your attack, the opponent's power on board could nearly kill you. Skipped when you were dead on board anyway.",
-    "Held removal": "Removal stayed in hand with mana up, and you took damage the next turn.",
+    "Held removal": "Removal stayed in hand with mana up, and you took damage the next turn. Skipped when you cast it during that turn.",
+    "No blocks": "You blocked nothing, took a big hit and ended low on life, while an untapped creature could have blocked and survived.",
     "No attack into an empty board": "The opponent had no untapped blockers and you didn't attack.",
     "Behind on board": "The opponent had clearly more creatures and power than you.",
-    "Missed land drop": "You had a land in hand but didn't play one.",
+    "Missed land drop": "You had a land in hand but didn't play one. Skipped once you have plenty of lands, or mana to spare and nothing that needs more (holding it can bluff a trick).",
 }
 SPOTLIGHT_HELP = ("The recent Limited game most worth a replay: losses with ?! flags first, "
                   "then the one with the most flags, newest on a tie.")
