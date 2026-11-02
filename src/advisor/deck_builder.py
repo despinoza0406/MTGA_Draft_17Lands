@@ -751,12 +751,12 @@ def suggest_deck(
                 # Otherwise leave it in its natural position: still shown and
                 # labeled, but not masquerading as a top pick.
 
-        # The model's builds come right after the top deck, whatever their
-        # heuristic score: they answer a different question (what winning
-        # players keep from a pool like this), so they shouldn't be buried.
+        # The model's builds come first, whatever their heuristic score: they
+        # answer a different question (what winning players keep from a pool
+        # like this), and played as built they have done better than the rest.
         models = [v for v in final_list if str(v[1].get("label_prefix", "")).startswith(MODEL_VARIANT)]
         others = [v for v in final_list if v not in models]
-        final_list = others[:1] + models + others[1:]
+        final_list = models + others
 
         for label, data in final_list:
             sorted_decks[label] = data

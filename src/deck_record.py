@@ -135,6 +135,12 @@ def save_suggestions(pool: List[Dict], decks: Dict[str, List[Dict]], event: str 
         names = _names(cards)
         if names:
             snap["decks"][deck_label(label)] = sorted(names)
+    # The end-of-draft save names the model build without its colors; the Deck page
+    # saves the same cards as "BG 🤖 Model Build (Splash R)". Keep one, the fuller name.
+    by_cards: Dict[tuple, str] = {}
+    for label in sorted(snap["decks"], key=len, reverse=True):
+        by_cards.setdefault(tuple(snap["decks"][label]), label)
+    snap["decks"] = {k: v for k, v in snap["decks"].items() if by_cards[tuple(v)] == k}
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(snapshots[-MAX_SNAPSHOTS:], f, indent=1)

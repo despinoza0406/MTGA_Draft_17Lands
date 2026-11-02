@@ -50,13 +50,14 @@ def test_suggestions_merge_per_pool_and_classify(tmp_path):
     save_suggestions(pool, {"🤖 Model Build": model}, "E", path)
     save_suggestions(pool, {"RG Consistent [Est: 4-3] (Power: 77)": other}, "E", path)
     save_suggestions(pool, {"RG Consistent [Est: 5-3] (Power: 78)": other}, "E", path)  # rebuilt
+    save_suggestions(pool, {"RG 🤖 Model Build [Est: 5-3]": model}, "E", path)  # same cards, fuller name
     snaps = load_snapshots(path)
-    assert len(snaps) == 1 and set(snaps[0]["decks"]) == {"🤖 Model Build", "RG Consistent"}
+    assert len(snaps) == 1 and set(snaps[0]["decks"]) == {"RG 🤖 Model Build", "RG Consistent"}
     assert "Forest" not in snaps[0]["pool"]
 
     played_model = [f"C{i}" for i in range(22)] + ["C25", "Forest"]
     info = classify_deck(played_model, snaps)
-    assert info == {"source": "model", "label": "🤖 Model Build", "changes": 1}
+    assert info == {"source": "model", "label": "RG 🤖 Model Build", "changes": 1}
     assert source_text(info) == "🤖 +1"
     played_other = [f"C{i}" for i in range(7, 30)]
     assert classify_deck(played_other, snaps)["source"] == "suggested"
