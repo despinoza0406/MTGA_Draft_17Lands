@@ -684,6 +684,17 @@ def _has_keyword(card: Dict, keyword: str) -> bool:
     return keyword in [w.strip(" .") for w in first.split(",")]
 
 
+def _tapped_out_in_combat(step: Dict) -> bool:
+    """The opponent ended the turn with every land tapped and cast nothing once damage
+    started, so their lands were already tapped when you declared blocks."""
+    lands = (step.get("end") or {}).get("opp_lands") or []
+    if not lands or any(not land[3] for land in lands):
+        return False
+    events = step.get("events") or []
+    first_damage = next((i for i, e in enumerate(events) if e[0] == "damage"), len(events))
+    return not any(e[0] == "cast" and e[1] == "opp" for e in events[first_damage:])
+
+
 def missed_safe_blocks(game: GameLog, card) -> List[Finding]:
     """Opponent's turns where you blocked nothing, took a big hit and ended low, while
     one of your untapped creatures could block an attacker and survive. A blocker that
@@ -721,11 +732,13 @@ def missed_safe_blocks(game: GameLog, card) -> List[Finding]:
         grp, power, toughness, a_grp, a_power, a_tough = found
         name = lambda g: card(g).get(constants.DATA_FIELD_NAME) or f"#{g}"
         kills = " and killed it" if power >= a_tough else ""
+        risk = ("They had no mana open, so no trick could punish the block: that was free life."
+                if _tapped_out_in_combat(step) else "Unless you feared a trick, that was free life.")
         out.append(Finding(
             step["turn"], "review",
             f"No blocks: you took {before - after} and went to {after} life. {name(grp)} ({power}/{toughness}) "
             f"could have blocked {name(a_grp)} ({a_power}/{a_tough}), survived{kills}, and still attacked next turn. "
-            f"Unless you feared a trick, that was free life.",
+            + risk,
             "No blocks",
         ))
     return out

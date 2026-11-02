@@ -520,3 +520,15 @@ def test_no_blocks_with_a_safe_blocker_is_flagged():
     small = [[1, 1, 1, False, None, None]]
     assert not [f for f in review_game(game([], timeline=[_combat_step([], small)]), lookup) if f.kind == "No blocks"]
     assert not [f for f in review_game(game([], timeline=[_combat_step([], wall, (20, 12))]), lookup) if f.kind == "No blocks"]
+
+
+def test_no_blocks_notes_when_the_opponent_was_tapped_out():
+    wall = [[1, 4, 5, False, None, None]]
+    step = _combat_step([], wall)
+    step["end"]["opp_lands"] = [[3, None, None, True, None, None]] * 6
+    step["events"] = [["cast", "opp", 8], ["damage", "opp", 7, "you", 3]]
+    text = next(f.text for f in review_game(game([], timeline=[step]), lookup) if f.kind == "No blocks")
+    assert "no mana open" in text
+    step["events"].append(["cast", "opp", 2])  # cast after damage: tapped later, maybe mid-combat
+    text = next(f.text for f in review_game(game([], timeline=[step]), lookup) if f.kind == "No blocks")
+    assert "Unless you feared a trick" in text
