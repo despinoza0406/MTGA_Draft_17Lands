@@ -551,3 +551,30 @@ def test_mulligan_for_colors_is_fair_and_names_the_seven():
     castable = game([], mulligans=1, first_hand_lands=2, first_hand=[3, 3, 1, 2, 2, 2, 2],
                     first_hand_land_colors=["G", "G"])
     assert review_game(castable, lookup, BENCH)[0].level == "review"
+
+
+def test_no_blocks_respects_flying_the_attacker_had_then():
+    # A Wordsmith-style attacker: no printed flying, but flying while it attacked.
+    wall = [[1, 4, 5, False, None, None, []]]
+    step = _combat_step([], wall)
+    for side in ("start", "end"):
+        step[side]["opp_board"] = [[7, 3, 3, False, None, None, ["flying"]], [8, 2, 2, False, None, None, ["flying"]]]
+    assert not [f for f in review_game(game([], timeline=[step]), lookup) if f.kind == "No blocks"]
+    # The same creature without flying that turn could be blocked.
+    for side in ("start", "end"):
+        step[side]["opp_board"] = [[7, 3, 3, False, None, None, []], [8, 2, 2, False, None, None, []]]
+    assert [f for f in review_game(game([], timeline=[step]), lookup) if f.kind == "No blocks"]
+
+
+def test_live_keywords_read_unique_abilities():
+    from src.game_review import _live_keywords
+    assert _live_keywords({"uniqueAbilities": [{"grpId": 204300}, {"grpId": 8}, {"grpId": 9}]}) == ["flying"]
+    assert _live_keywords({"abilities": [13]}) == ["reach"]
+    assert _live_keywords({}) == []
+
+
+def test_no_blocks_uses_evasion_at_combat_time():
+    # Flying switched on mid-turn: the start snapshot shows none, combat shows it.
+    step = _combat_step([], [[1, 4, 5, False, None, None, []]])
+    step["combat"]["evasion"] = {"7": ["flying"], "8": ["flying"], "1": []}
+    assert not [f for f in review_game(game([], timeline=[step]), lookup) if f.kind == "No blocks"]

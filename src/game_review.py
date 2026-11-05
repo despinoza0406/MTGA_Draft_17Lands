@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 REVIEWS_FILE = os.path.join(constants.BASE_DIR, "Game_Reviews.json")
 MIN_BENCHMARK_GAMES = 300
 # Bump when GameLog gains fields, so stored games are re-recorded from the logs.
-RECORD_VERSION = 7
+RECORD_VERSION = 9
 LIFE_SWING_FOR_REMOVAL_CHECK = 4
 
 
@@ -316,7 +316,8 @@ class GameRecorder(GameTracker):
         def entry(o):
             host = self.objects.get(attached_to.get(o["instanceId"]), {})
             return [o["grpId"], (o.get("power") or {}).get("value"), (o.get("toughness") or {}).get("value"),
-                    bool(o.get("isTapped")), (o.get("loyalty") or {}).get("value"), host.get("grpId")]
+                    bool(o.get("isTapped")), (o.get("loyalty") or {}).get("value"), host.get("grpId"),
+                    _live_keywords(o)]
 
         def board(seat, lands):
             return [entry(o) for o in self._battlefield(seat) if _is_type(o, "Land") == lands]
@@ -382,8 +383,21 @@ class GameRecorder(GameTracker):
                                   if i in self.objects]]
                     for o in self.objects.values() if o.get("blockState") == "BlockState_Blocking"
                 ]
-                step["combat"] = {"attackers": [[self._who(o.get("controllerSeatId")), o["grpId"]] for o in attackers],
-                                  "blocks": blocks}
+                # Evasion as of this combat: flying can switch on mid-turn
+                # (e.g. after a ping), after the turn's start snapshot.
+                evasion = {str(o["grpId"]): _live_keywords(o) for o in self._zone_objects("ZoneType_Battlefield")
+                           if not _is_type(o, "Land")}
+                new = {"attackers": [[self._who(o.get("controllerSeatId")), o["grpId"]] for o in attackers],
+                       "blocks": blocks, "evasion": evasion}
+                # Merge with this turn's earlier combat steps: blockers that died
+                # in first-strike or regular damage are gone by the later step, and
+                # evasion is what it was when blocks were declared.
+                old = step.get("combat")
+                if old:
+                    for key in ("attackers", "blocks"):
+                        new[key] = old[key] + [x for x in new[key] if x not in old[key]]
+                    new["evasion"] = {**evasion, **(old.get("evasion") or {})}
+                step["combat"] = new
 
         snapshot = self._snapshot()
         if step["start"] is None and turn_info.get("phase") in ("Phase_Main1", "Phase_Combat", "Phase_Main2"):
@@ -719,6 +733,25 @@ NO_BLOCK_LOW_LIFE = 5
 NO_BLOCK_MIN_HIT = 4
 
 
+# Arena ability ids for evasion keywords, as listed on a game object's
+# uniqueAbilities while they're in effect (conditional or granted ones included).
+ABILITY_KEYWORDS = {8: "flying", 13: "reach"}
+
+
+def _live_keywords(obj: Dict) -> List[str]:
+    ids = [a.get("grpId") for a in obj.get("uniqueAbilities") or []] + list(obj.get("abilities") or [])
+    return sorted({ABILITY_KEYWORDS[i] for i in ids if i in ABILITY_KEYWORDS})
+
+
+def _entry_has(entry, card: Dict, keyword: str) -> bool:
+    """Whether a board entry had the keyword at that moment. Entries recorded with
+    their live keywords use those (e.g. flying only while an opponent was dealt
+    noncombat damage); older ones fall back to the card's printed keywords."""
+    if len(entry) > 6 and entry[6] is not None:
+        return keyword in entry[6]
+    return _has_keyword(card, keyword)
+
+
 def _has_keyword(card: Dict, keyword: str) -> bool:
     rules = _rules(card)
     if any(str(k).lower() == keyword for k in rules.get("keywords") or []):
@@ -755,18 +788,26 @@ def missed_safe_blocks(game: GameLog, card) -> List[Finding]:
             continue
         if before is None or after is None or before - after < NO_BLOCK_MIN_HIT or after > NO_BLOCK_LOW_LIFE:
             continue
-        stats = {}
+        evasion = combat.get("evasion")  # keywords at combat time, when recorded
+
+        def has(entry, keyword):
+            if evasion is not None and str(entry[0]) in evasion:
+                return keyword in evasion[str(entry[0])]
+            return _entry_has(entry, card(entry[0]), keyword)
+
+        stats, fliers = {}, {}
         for entry in (end.get("opp_board") or []) + (start.get("opp_board") or []):  # start wins: stats as they attacked
             stats[entry[0]] = (entry[1] or 0, entry[2] or 0)
+            fliers[entry[0]] = has(entry, "flying")
         attackers = [stats[g] + (g,) for who, g in combat["attackers"] if who == "opp" and g in stats]
         found = None
         for mine in start.get("my_board") or []:
             grp, power, toughness, tapped = mine[0], mine[1] or 0, mine[2] or 0, mine[3]
             if tapped or toughness <= 0:
                 continue
-            reach = _has_keyword(card(grp), "flying") or _has_keyword(card(grp), "reach")
+            reach = has(mine, "flying") or has(mine, "reach")
             for a_power, a_tough, a_grp in sorted(attackers, reverse=True):
-                if a_power < toughness and (reach or not _has_keyword(card(a_grp), "flying")):
+                if a_power < toughness and (reach or not fliers.get(a_grp)):
                     found = (grp, power, toughness, a_grp, a_power, a_tough)
                     break
             if found:
