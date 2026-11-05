@@ -459,11 +459,12 @@ class DashboardFrame(ttk.Frame):
             self.configuration,
             on_click_callback=self.on_advisor_click,
         )
-        self.advisor_panel.pack(
+        self._advisor_pack_opts = dict(
             fill="x",
             pady=(Theme.scaled_val(10), Theme.scaled_val(15)),
             padx=(0, Theme.scaled_val(10)),
         )
+        self.advisor_panel.pack(**self._advisor_pack_opts)
 
         self.signal_container = CollapsibleFrame(
             self.sidebar_container,
@@ -486,6 +487,8 @@ class DashboardFrame(ttk.Frame):
         self.curve_container.pack(
             fill="x", pady=(0, Theme.scaled_val(15)), padx=(0, Theme.scaled_val(10))
         )
+        self.set_advisor_visible(self.configuration.settings.advisor_enabled)
+
         default_ideal = self.configuration.card_logic.deck_mid.distribution
         self.curve_plot = ManaCurvePlot(
             self.curve_container.content_frame, ideal_distribution=default_ideal
@@ -673,13 +676,6 @@ class DashboardFrame(ttk.Frame):
                     display_name = f"⭐ {name}"
                     row_tag = (
                         "elite_bomb"
-                        if not self.configuration.settings.card_colors_enabled
-                        else row_tag
-                    )
-                elif rec.archetype_fit == "High":
-                    display_name = f"[+] {name}"
-                    row_tag = (
-                        "high_fit"
                         if not self.configuration.settings.card_colors_enabled
                         else row_tag
                     )
@@ -924,6 +920,17 @@ class DashboardFrame(ttk.Frame):
                 self.h_splitter.sashpos(0, target)
         except tkinter.TclError:
             pass
+
+    def set_advisor_visible(self, visible):
+        if not hasattr(self, "advisor_panel"):
+            return
+        if not visible:
+            self.advisor_panel.pack_forget()
+        elif not self.advisor_panel.winfo_manager():
+            # Restore it above Open Lanes, where it was built.
+            self.advisor_panel.pack(
+                before=self.signal_container, **self._advisor_pack_opts
+            )
 
     def _on_sash_drag_end(self, event):
         try:

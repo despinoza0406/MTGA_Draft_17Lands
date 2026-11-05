@@ -7,11 +7,6 @@ from src.advisor.schema import Recommendation
 @pytest.fixture
 def mock_metrics():
     metrics = MagicMock()
-    # Mocking format_texture for VOR (Value Over Replacement) tests
-    metrics.format_texture = {
-        "R": {"2-drop": 1, "removal": 10},  # Extremely scarce red 2-drops
-        "G": {"2-drop": 10, "removal": 1},  # Extremely scarce green removal
-    }
     # get_metrics returns (mean, std)
     metrics.get_metrics.return_value = (55.0, 4.0)
     return metrics
@@ -118,35 +113,33 @@ def test_calculate_castability_v5(mock_metrics):
     assert mult == 0.05
 
 
-def test_check_relative_wheel(mock_metrics):
+def test_wheel_chance(mock_metrics):
     advisor = DraftAdvisor(mock_metrics, [])
     # Should wheel if ALSA is greater than the current pick
-    mult, reason, pct = advisor._check_relative_wheel(
+    pct = advisor._wheel_chance(
         {"deck_colors": {"All Decks": {"alsa": 10.0}}}, pick=2, rank_in_pack=5
     )
 
     assert pct > 0.0
-    assert mult == 0.8
-    assert "Wheels" in reason
 
 
 @pytest.mark.parametrize("pick, pack_size", [(6, 8), (7, 8), (8, 7)])
-def test_check_relative_wheel_needs_nine_cards(mock_metrics, pick, pack_size):
+def test_wheel_chance_needs_nine_cards(mock_metrics, pick, pack_size):
     """A pack with fewer than 9 cards can't come back, whatever the pick."""
     advisor = DraftAdvisor(mock_metrics, [])
-    mult, reason, pct = advisor._check_relative_wheel(
+    pct = advisor._wheel_chance(
         {"deck_colors": {"All Decks": {"alsa": 8.5}}},
         pick=pick,
         rank_in_pack=5,
         pack_size=pack_size,
     )
 
-    assert (mult, reason, pct) == (1.0, "", 0.0)
+    assert pct == 0.0
 
 
-def test_check_relative_wheel_allows_last_wheelable_pick(mock_metrics):
+def test_wheel_chance_allows_last_wheelable_pick(mock_metrics):
     advisor = DraftAdvisor(mock_metrics, [])
-    _, _, pct = advisor._check_relative_wheel(
+    pct = advisor._wheel_chance(
         {"deck_colors": {"All Decks": {"alsa": 8.5}}},
         pick=6,
         rank_in_pack=5,
@@ -174,6 +167,26 @@ def test_evaluate_pack_wheel_chance_uses_pack_size(mock_metrics, pack_size, whee
     recs = advisor.evaluate_pack(pack, current_pick=7)
 
     assert any(r.wheel_chance > 0 for r in recs) is wheels
+
+
+def test_wheel_chance_does_not_change_score(mock_metrics):
+    """The wheel chance is shown, but a likely wheel isn't marked down."""
+    advisor = DraftAdvisor(mock_metrics, [])
+    pack = [
+        {
+            "name": f"Card{i}",
+            "colors": ["G"],
+            "types": ["Creature"],
+            "cmc": 3,
+            "deck_colors": {"All Decks": {"gihwr": 55.0, "alsa": alsa}},
+        }
+        for i, alsa in enumerate([1.5, 1.5, 1.5, 1.5, 1.5, 12.0, 12.0, 12.0, 12.0])
+    ]
+
+    recs = {r.card_name: r for r in advisor.evaluate_pack(pack, current_pick=2)}
+
+    assert recs["Card8"].wheel_chance >= 75.0
+    assert recs["Card8"].contextual_score == recs["Card0"].contextual_score
 
 
 def test_evaluate_pack_elite_detection(mock_metrics):
@@ -229,29 +242,91 @@ def test_evaluate_pack_elite_detection(mock_metrics):
     assert recs[0].is_elite is True
 
 
-def test_evaluate_value_over_replacement(mock_metrics):
-    advisor = DraftAdvisor(mock_metrics, [])
-    advisor.main_colors = ["R"]
-    advisor.global_mean = 55.0
-    advisor.global_std = 4.0
-
-    # A playable red 2-drop. Because we defined Red 2-drops as incredibly scarce
-    # in the mock_metrics fixture above, this card should trigger a VOR bonus!
-    pack = [
-        {
-            "name": "Scarce Red 2-Drop",
-            "colors": ["R"],
-            "types": ["Creature"],
-            "cmc": 2,
-            "tags": ["evasion"],
-            "deck_colors": {"All Decks": {"gihwr": 54.0}},
-        }
+def _white_blue_advisor(metrics):
+    """An advisor whose pool leads in white-blue."""
+    pool = [
+        {"colors": ["W"], "deck_colors": {"All Decks": {"gihwr": 62.0}}}
+        for _ in range(4)
+    ] + [
+        {"colors": ["U"], "deck_colors": {"All Decks": {"gihwr": 60.0}}}
+        for _ in range(3)
     ]
+    advisor = DraftAdvisor(metrics, pool)
+    assert advisor.main_archetype == "WU"
+    return advisor
 
-    recs = advisor.evaluate_pack(pack, current_pick=1)
 
-    assert len(recs) == 1
-    assert any("High VOR: Scarce R 2-Drops" in reason for reason in recs[0].reasoning)
+def _white_card(name, pair_wr):
+    """A white common with a GIH WR of 55 overall and pair_wr in WU decks."""
+    return {
+        "name": name,
+        "colors": ["W"],
+        "types": ["Creature"],
+        "cmc": 2,
+        "rarity": "common",
+        "deck_colors": {
+            "All Decks": {"gihwr": 55.0},
+            "WU": {"gihwr": pair_wr, "samples": 1000},
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "pick,expected", [(1, 59.7), (13, 68.1), (15, 69.5), (30, 69.5)]
+)
+def test_archetype_weight_ramps_within_the_pack(mock_metrics, pick, expected):
+    """The archetype's edge is weighted 0.65 at a pack's first pick and 1.21 at
+    its 13th, the last choice in a 14-card pack. It stops at 1.3, at pick 15."""
+    advisor = DraftAdvisor(mock_metrics, [])
+    advisor.main_archetype = "WU"
+    card = _white_card("Glue", 59.0)
+
+    # The mean is 55 and the SD 4, and a score is 50 + 15 points per SD.
+    # Pick 1: 55 + 0.647 * (59 - 55) = 57.6, 0.65 SD up: 50 + 0.65 * 15 = 59.7.
+    # Pick 13: 55 + 1.207 * (59 - 55) = 59.8, 1.21 SD up: 50 + 1.21 * 15 = 68.1.
+    # Pick 15: 55 + 1.3 * (59 - 55) = 60.2, 1.3 SD up: 50 + 1.3 * 15 = 69.5.
+    assert advisor._calculate_weighted_score(card, pick) == pytest.approx(
+        expected, abs=0.05
+    )
+
+
+@pytest.mark.parametrize(
+    "pick,cards_per_pick,points",
+    [(1, 1, 9.7), (6, 1, 13.2), (1, 2, 9.7), (6, 2, 16.7), (7, 2, 18.1)],
+)
+def test_pick_two_weighs_a_pick_by_the_cards_gone(
+    mock_metrics, pick, cards_per_pick, points
+):
+    """Pick-Two drafts take two cards a pick, so their pick 6 weighs the
+    archetype like pick 11 of a one-card draft: 10 cards have left the pack."""
+    advisor = _white_blue_advisor(mock_metrics)
+    pack = [_white_card("Glue", 59.0), _white_card("Plain", 55.0)]
+
+    recs = advisor.evaluate_pack(pack, pick, cards_per_pick=cards_per_pick)
+
+    # The edge is one SD, so it scores 15 points times the weight: 0.647 at
+    # pick 1, 0.88 at pick 6, 1.113 at pick 11 and 1.207 at pick 13.
+    glue = next(r for r in recs if r.card_name == "Glue")
+    assert f"Better in WU (+{points})" in glue.reasoning
+
+
+def test_evaluate_pack_counts_the_archetype_edge_once(mock_metrics):
+    """A card that does better in the lane's pair gains only through the
+    archetype weight, with no glue or synergy bonus on top, and says so."""
+    advisor = _white_blue_advisor(mock_metrics)
+    glue, plain = _white_card("Glue", 59.0), _white_card("Plain", 55.0)
+    recs = {r.card_name: r for r in advisor.evaluate_pack([glue, plain], 1)}
+
+    # The two cards get the same multipliers, so their scores differ only by
+    # their base scores, 59.7 against 50. The old glue bonus added 20 more.
+    ratio = advisor._calculate_weighted_score(
+        glue, 1
+    ) / advisor._calculate_weighted_score(plain, 1)
+    assert recs["Glue"].contextual_score == pytest.approx(
+        recs["Plain"].contextual_score * ratio, abs=0.1
+    )
+    assert "Better in WU (+9.7)" in recs["Glue"].reasoning
+    assert not any("WU" in r for r in recs["Plain"].reasoning)
 
 
 def test_composition_bonus_heuristics(mock_metrics):

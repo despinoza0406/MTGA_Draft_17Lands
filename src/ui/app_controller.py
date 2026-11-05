@@ -267,6 +267,8 @@ class AppController:
             draft_id = self.orchestrator.scanner.current_draft_id
             start_time = self.orchestrator.scanner.draft_start_time
             event_string = self.orchestrator.scanner.event_string
+            cards_per_pick = self.orchestrator.scanner.cards_per_pick
+            number_of_players = self.orchestrator.scanner.number_of_players
         finally:
             self.orchestrator.scanner.lock.release()
 
@@ -283,9 +285,14 @@ class AppController:
             for c, v in sig_calc.calculate_pack_signals(h_pack, entry["Pick"]).items():
                 scores[c] += v
 
-        # Pass signals securely into Advisor
-        advisor = DraftAdvisor(metrics, taken_cards, signals=scores)
-        recommendations = advisor.evaluate_pack(pack_cards, pi, current_pack=pk)
+        recommendations = []
+        if self.config.settings.advisor_enabled:
+            advisor = DraftAdvisor(metrics, taken_cards)
+            recommendations = advisor.evaluate_pack(
+                pack_cards, pi, current_pack=pk,
+                cards_per_pick=cards_per_pick,
+                number_of_players=number_of_players,
+            )
 
         # Pick Two: choose the second card with the first already in the pool.
         cards_per_pick = getattr(self.orchestrator.scanner, "cards_per_pick", 1)

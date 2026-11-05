@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mtga-draft-tool"
-version = "4.27"
+version = "4.30"
 description = "Magic: The Gathering Arena draft tool that utilizes 17Lands data."
 authors = ["unrealities"]
 readme = "README.md"
@@ -14,7 +14,6 @@ python = ">=3.12,<3.15"
 numpy = "2.5.4"
 Pillow = "13.0.0"
 pydantic = "2.14.1"
-pynput = "1.8.2"
 requests = "2.34.2"
 ttkbootstrap = "2.2.5"
 numba = "0.68.1"

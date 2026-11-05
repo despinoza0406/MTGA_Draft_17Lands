@@ -46,8 +46,7 @@ class CardInteractionManager:
                 ).index("name")
                 raw_name = str(item_vals[name_idx])
                 card_name = (
-                    raw_name.replace("⭐ ", "").replace("① ", "").replace("② ", "").replace("①② ", "")
-                    .replace("[+] ", "")
+                    raw_name.replace("⭐ ", "").replace("①② ", "").replace("① ", "").replace("② ", "")
                     .replace("*", "")
                     .strip()
                 )
@@ -108,8 +107,7 @@ class CardInteractionManager:
                 name_idx = table.active_fields.index("name")
                 raw_name = str(item_vals[name_idx])
                 card_name = (
-                    raw_name.replace("⭐ ", "").replace("① ", "").replace("② ", "").replace("①② ", "")
-                    .replace("[+] ", "")
+                    raw_name.replace("⭐ ", "").replace("①② ", "").replace("① ", "").replace("② ", "")
                     .replace("*", "")
                     .strip()
                 )

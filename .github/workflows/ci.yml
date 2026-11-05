@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name == 'schedule' || inputs.full_matrix) && '["ubuntu-latest", "macos-latest", "windows-latest"]' || '["ubuntu-latest"]') }}
+        os: ${{ fromJSON((github.event_name == 'schedule' || inputs.full_matrix) && '["ubuntu-latest", "macos-14", "windows-latest"]' || '["ubuntu-latest"]') }}
         python-version: ${{ fromJSON((github.event_name == 'schedule' || inputs.full_matrix) && '["3.12", "3.13", "3.14"]' || '["3.12"]') }}
     steps:
       - uses: actions/checkout@v4
@@ -51,6 +51,10 @@ jobs:
       - name: Test on macOS and Windows
         if: runner.os != 'Linux'
         run: poetry run pytest tests/
+      - name: Test the advisor replay harness
+        run: poetry run pytest Tools/AdvisorReplay/tests
+      - name: Test the deck score fit tool
+        run: poetry run pytest Tools/DeckScoreFit/tests
       - name: Audit Python dependencies
         if: >-
           (github.event_name == 'schedule' || inputs.full_matrix) &&
@@ -82,6 +86,11 @@ jobs:
         run: npm test -- --runInBand
       - name: Audit JavaScript dependencies
         if: github.event_name == 'schedule' || inputs.full_matrix
-        # Low advisories are still reported. deepmerge (via jest) has an
-        # unpatched low advisory, GHSA-gcqx-w48m-w2h4, that blocked releases.
+        # Only runtime dependencies can fail a release. The scraper's only
+        # packages are jest and jsdom, test tooling that never ships, and their
+        # advisories (glob, minimatch, deepmerge) have no fix short of jest 25.
+        run: npm audit --omit=dev --audit-level=moderate
+      - name: Report dev dependency advisories
+        if: github.event_name == 'schedule' || inputs.full_matrix
+        continue-on-error: true
         run: npm audit --audit-level=moderate
