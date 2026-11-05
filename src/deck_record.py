@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 SUGGESTIONS_FILE = os.path.join(constants.BASE_DIR, "Deck_Suggestions.json")
 MAX_SNAPSHOTS = 60
+# A pool this small is a draft still in progress: nothing to play from it yet.
+MIN_SAVED_POOL = 40
 # A played deck within this many card swaps of a suggestion counts as that suggestion.
 SAME_DECK_CHANGES = 3
 MODEL_PREFIX = "🤖"
@@ -118,12 +120,16 @@ def save_suggestions(pool: List[Dict], decks: Dict[str, List[Dict]], event: str 
     Merges into the snapshot of the same pool, so the model build saved at the end
     of the draft and the full list from the Deck page end up together."""
     pool_names = sorted(_names(pool))
-    if not pool_names or not decks:
+    pool_size = sum(int(c.get("count", 1) or 1) for c in pool or [])
+    if not pool_names or not decks or pool_size < MIN_SAVED_POOL:
         return
     # UI tests build decks from fake pools; only an explicit path may be written then.
     if path == SUGGESTIONS_FILE and "pytest" in sys.modules:
         return
-    snapshots = load_snapshots(path)
+    # Earlier saves of this same draft (a pool this one contains) are superseded.
+    whole = Counter(pool_names)
+    snapshots = [s for s in load_snapshots(path)
+                 if s.get("pool") == pool_names or Counter(s.get("pool", [])) - whole]
     snap = next((s for s in snapshots if s.get("pool") == pool_names), None)
     if snap is None:
         snap = {"pool": pool_names, "event": event, "decks": {}}

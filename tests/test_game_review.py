@@ -532,3 +532,22 @@ def test_no_blocks_notes_when_the_opponent_was_tapped_out():
     step["events"].append(["cast", "opp", 2])  # cast after damage: tapped later, maybe mid-combat
     text = next(f.text for f in review_game(game([], timeline=[step]), lookup) if f.kind == "No blocks")
     assert "Unless you feared a trick" in text
+
+
+def test_held_back_while_ahead():
+    idle = TurnLog(17, True, eligible_attackers=4, opponent_blockers=2, attackers=0,
+                   opponent_life_end=6, opponent_power=4, life_end=20)
+    assert any(f.kind == "Held back while ahead" for f in review_game(game([idle]), lookup))
+    for change in (dict(attackers=2), dict(opponent_life_end=15), dict(opponent_power=12), dict(eligible_attackers=2)):
+        turn = TurnLog(**{**idle.__dict__, **change})
+        assert not any(f.kind == "Held back while ahead" for f in review_game(game([turn]), lookup)), change
+
+
+def test_mulligan_for_colors_is_fair_and_names_the_seven():
+    color_screwed = game([], mulligans=1, first_hand_lands=2, first_hand=[3, 3, 2, 2, 2, 2, 2],
+                         first_hand_land_colors=["G", "G"])
+    f = review_game(color_screwed, lookup, BENCH)[0]
+    assert f.level == "ok" and "couldn't cast" in f.text and "Forest" in f.text
+    castable = game([], mulligans=1, first_hand_lands=2, first_hand=[3, 3, 1, 2, 2, 2, 2],
+                    first_hand_land_colors=["G", "G"])
+    assert review_game(castable, lookup, BENCH)[0].level == "review"

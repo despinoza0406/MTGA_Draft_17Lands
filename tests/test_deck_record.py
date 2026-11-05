@@ -44,7 +44,7 @@ def cards(*names):
 
 def test_suggestions_merge_per_pool_and_classify(tmp_path):
     path = str(tmp_path / "s.json")
-    pool = cards(*[f"C{i}" for i in range(30)], "Forest")
+    pool = cards(*[f"C{i}" for i in range(40)], "Forest")
     model = cards(*[f"C{i}" for i in range(23)], "Forest")
     other = cards(*[f"C{i}" for i in range(7, 30)])
     save_suggestions(pool, {"🤖 Model Build": model}, "E", path)
@@ -91,3 +91,17 @@ def test_group_runs_splits_drafts_with_the_same_event_name():
     ]
     # The UB draft's last game joins it across the Ladder games in between.
     assert group_runs(entries) == [[0, 1], [2, 3, 6], [4, 5]]
+
+
+def test_only_finished_pools_are_saved_and_replace_partial_ones(tmp_path):
+    path = tmp_path / "s.json"
+    full = cards(*[f"C{i}" for i in range(40)])
+    other_draft = {"pool": ["Z1", "Z2"], "event": "E", "decks": {"Z": ["Z1"]}}
+    partial = {"pool": sorted(f"C{i}" for i in range(25)), "event": "E", "decks": {"A": ["C1"]}}
+    path.write_text(json.dumps([other_draft, partial]), encoding="utf-8")
+
+    save_suggestions(full[:30], {"B": full[:23]}, "E", str(path))  # draft still going: not saved
+    assert len(load_snapshots(str(path))) == 2
+    save_suggestions(full, {"B": full[:23]}, "E", str(path))
+    pools = [len(s["pool"]) for s in load_snapshots(str(path))]
+    assert pools == [2, 40]  # the partial save of this draft is gone, the other draft stays

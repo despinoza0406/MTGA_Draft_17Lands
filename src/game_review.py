@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 REVIEWS_FILE = os.path.join(constants.BASE_DIR, "Game_Reviews.json")
 MIN_BENCHMARK_GAMES = 300
 # Bump when GameLog gains fields, so stored games are re-recorded from the logs.
-RECORD_VERSION = 6
+RECORD_VERSION = 7
 LIFE_SWING_FOR_REMOVAL_CHECK = 4
 
 
@@ -163,6 +163,9 @@ class GameLog:
     first_hand_lands: Optional[int] = None
     opening_hand: List[int] = field(default_factory=list)
     opening_hand_lands: Optional[int] = None
+    # Your first 7, before any mulligan, and the colors its lands make ("" = unknown).
+    first_hand: List[int] = field(default_factory=list)
+    first_hand_land_colors: List[str] = field(default_factory=list)
     won: Optional[bool] = None
     deck: List[int] = field(default_factory=list)
     card_stats: Dict[int, List[int]] = field(default_factory=dict)  # your cards: grpId -> [power, toughness]
@@ -236,6 +239,8 @@ class GameRecorder(GameTracker):
                 hand = self._zone_objects("ZoneType_Hand", self.seat)
                 if hand:
                     self.current.first_hand_lands = sum(_is_type(o, "Land") for o in hand)
+                    self.current.first_hand = [o["grpId"] for o in hand]
+                    self.current.first_hand_land_colors = [_land_colors(o) for o in hand if _is_type(o, "Land")]
             self._mulligan_prompts += 1
             self.current.mulligans = self._mulligan_prompts - 1
             return
@@ -449,7 +454,21 @@ def _rate(cell: Optional[Dict]):
     return cell["wins"] / cell["games"], cell["games"]
 
 
-def _mulligan_findings(game: GameLog, benchmarks: Optional[Dict]) -> List[Finding]:
+def _first_hand_castable(game: GameLog, card) -> Optional[bool]:
+    """Could the first 7's lands cast any of its spells? None when unknown."""
+    if not game.first_hand or card is None:
+        return None
+    sources = game.first_hand_land_colors
+    spells = [card(g) for g in game.first_hand if "Land" not in card(g).get("types", [])]
+    if not spells or any(not c for c in spells):
+        return None
+    return any(
+        can_pay(c.get("mana_cost", ""), float(c.get("cmc", 0) or 0), sources)
+        for c in spells if 0 < float(c.get("cmc", 0) or 0) <= max(len(sources), 1)
+    )
+
+
+def _mulligan_findings(game: GameLog, benchmarks: Optional[Dict], card=None) -> List[Finding]:
     if not benchmarks or game.on_play is None:
         return []
     side = "play" if game.on_play else "draw"
@@ -473,7 +492,15 @@ def _mulligan_findings(game: GameLog, benchmarks: Optional[Dict]) -> List[Findin
                 f"Mulliganed a 7 with {game.first_hand_lands} lands on the {side}: keeping such hands wins "
                 f"{keep:.0%}, mulliganing {after_mull:.0%} (17Lands; rough guide, the spells matter too)."
             )
-            out.append(Finding(0, "review" if keep > after_mull + 0.05 else "ok", text, "Mulliganed a keepable 7"))
+            level = "review" if keep > after_mull + 0.05 else "ok"
+            if _first_hand_castable(game, card) is False:
+                # A color screw: the land count looks fine, but nothing in it was castable.
+                text += " Its lands couldn't cast any of its spells, so sending it back was fair."
+                level = "ok"
+            if game.first_hand and card is not None:
+                names = [card(g).get(constants.DATA_FIELD_NAME) or f"#{g}" for g in game.first_hand]
+                text += " The 7: " + ", ".join(sorted(names)) + "."
+            out.append(Finding(0, level, text, "Mulliganed a keepable 7"))
     return out
 
 
@@ -483,7 +510,7 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
     def name(grp_id) -> str:
         return card(grp_id).get(constants.DATA_FIELD_NAME) or f"#{grp_id}"
 
-    findings = _mulligan_findings(game, benchmarks)
+    findings = _mulligan_findings(game, benchmarks, card)
     my_turns = [t for t in game.turns if t.mine]
     held_turns: Dict[int, int] = {}  # creature grpId -> consecutive turns held while castable
     prioritized = set()  # cards already flagged by the prioritization check
@@ -610,6 +637,23 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
             findings.append(
                 Finding(turn.number, "review", f"The opponent had no untapped blockers, but you didn't attack with your "
                         f"{_plural(turn.eligible_attackers, 'creature')} that could attack.", "No attack into an empty board")
+            )
+
+        if (
+            turn.attackers == 0
+            and turn.eligible_attackers > turn.opponent_blockers > 0
+            and turn.opponent_life_end is not None
+            and turn.opponent_life_end <= PRESSURE_LIFE
+            and turn.life_end is not None
+            and turn.opponent_power * 2 < turn.life_end
+        ):
+            findings.append(
+                Finding(turn.number, "review",
+                        f"No attack with the opponent at {turn.opponent_life_end} life: your "
+                        f"{_plural(turn.eligible_attackers, 'creature')} could attack into "
+                        f"{_plural(turn.opponent_blockers, 'blocker')}, and their {turn.opponent_power} power "
+                        f"couldn't threaten your {turn.life_end} life. Pressure now leaves them fewer outs.",
+                        "Held back while ahead")
             )
 
         removal = [
@@ -765,6 +809,8 @@ def _merge_repeats(findings: List[Finding]) -> List[Finding]:
 
 MISSED_LAND_ENOUGH = 7
 MISSED_LAND_SPARE = 5
+# Opponent life at or below which holding back every attacker is worth a look.
+PRESSURE_LIFE = 8
 # Flags that tend to repeat every turn of a board stall; the rest stay per turn.
 REPEATABLE_KINDS = ("Risky attack", "No attack into an empty board", "Missed land drop", "Unused mana",
                     "Unused mana held for instants")
@@ -915,6 +961,7 @@ KIND_HELP = {
     "Weaker card cast first": "You cast a lower-rated card (17Lands GIH win rate) while a better one you could also pay for stayed in hand. Card draw spells are skipped.",
     "Risky attack": "After your attack, the opponent's power on board could nearly kill you. Skipped when you were dead on board anyway.",
     "Held removal": "Removal stayed in hand with mana up, and you took damage the next turn. Skipped when you cast it during that turn.",
+    "Held back while ahead": "You didn't attack while you had more attackers than they had blockers, the opponent was low, and their board couldn't threaten you.",
     "No blocks": "You blocked nothing, took a big hit and ended low on life, while an untapped creature could have blocked and survived.",
     "No attack into an empty board": "The opponent had no untapped blockers and you didn't attack.",
     "Behind on board": "The opponent had clearly more creatures and power than you.",
