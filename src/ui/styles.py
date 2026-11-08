@@ -483,10 +483,14 @@ class Theme:
 
                 cls.BG_PRIMARY = sys_bg if sys_bg else colors.bg
 
-                # Ensure zebra striping uses a highly subtle background tint
+                # Ensure zebra striping uses a highly subtle background tint.
+                # ttkbootstrap 2 calls it `mode`; `type` is the deprecated name.
+                mode = getattr(style.theme, "mode", None) or getattr(
+                    style.theme, "type", "dark"
+                )
                 if target_theme == "arena":
                     cls.BG_SECONDARY = cls.ARENA["surface"]
-                elif getattr(style.theme, "type", "dark") == "light":
+                elif mode == "light":
                     cls.BG_SECONDARY = colors.light
                 else:
                     cls.BG_SECONDARY = colors.dark

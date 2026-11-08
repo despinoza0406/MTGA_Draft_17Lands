@@ -21,7 +21,7 @@ MIN_SWAP_GAIN = 1.0  # GIHWR points a sideboard card must beat a maindeck card b
 MAX_SWAPS = 5
 MIN_CREATURES = 13
 MIN_TWO_DROPS = 4
-MAX_TOP_END = 5  # spells costing 5+
+MAX_TOP_END = 6  # spells costing 5+; 17Lands data: flat up to 6, worse at 7+
 MIN_REMOVAL = 2
 SPLASH_SOURCES = 3
 

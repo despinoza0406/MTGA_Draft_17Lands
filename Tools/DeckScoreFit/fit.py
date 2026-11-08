@@ -43,6 +43,7 @@ class Data:
         rows = [dict(r, set=f["set"]) for f in files for r in f["rows"]]
         kept = [r for r in rows if not any(r["features"][k] for k in FIXED)]
         self.unfinished = len(rows) - len(kept)
+        self.rows = kept
         names = [k for k in self.weights if k not in FIXED]
         self.never = [k for k in names if not any(r["features"][k] for r in kept)]
         self.names = [k for k in names if k not in self.never]
@@ -72,8 +73,9 @@ def expit(x):
     return 1.0 / (1.0 + np.exp(-x))
 
 
-def fit_logit(A, wins, games, offset=0.0):
-    """Coefficients and their covariance for a binomial logistic regression."""
+def newton(A, wins, games, offset=0.0):
+    """Maximum-likelihood coefficients of a binomial logistic regression, the
+    (ridge-stabilized) Hessian at them, and the fitted win rates."""
     beta = np.zeros(A.shape[1])
     ridge = 1e-8 * np.eye(A.shape[1])
     for _ in range(100):
@@ -84,12 +86,48 @@ def fit_logit(A, wins, games, offset=0.0):
         if np.abs(step).max() < 1e-9:
             break
     p = expit(A @ beta + offset)
-    # Players differ by more than their buckets say, so the games of one deck
-    # vary more than a binomial: widen the errors by the Pearson dispersion.
-    dispersion = ((wins - games * p) ** 2 / (games * p * (1 - p))).sum() / max(
+    H = A.T @ (A * (games * p * (1 - p))[:, None]) + ridge
+    return beta, H, p
+
+
+def dispersion(A, wins, games, p):
+    """Players differ by more than their buckets say, so the games of one deck
+    vary more than a binomial: the Pearson dispersion widens the errors."""
+    return ((wins - games * p) ** 2 / (games * p * (1 - p))).sum() / max(
         1, len(wins) - A.shape[1]
     )
-    return beta, np.linalg.inv(H) * max(1.0, dispersion)
+
+
+def fit_logit(A, wins, games, offset=0.0):
+    """Coefficients and their covariance for a binomial logistic regression."""
+    beta, H, p = newton(A, wins, games, offset)
+    return beta, np.linalg.inv(H) * max(1.0, dispersion(A, wins, games, p))
+
+
+def fit_clustered(A, wins, games, clusters=None):
+    """Coefficients, model covariance (dispersion-widened), cluster covariance.
+
+    The cluster covariance is the sandwich over the groups in clusters (one
+    label per row), or None without clusters or with only one group.
+    """
+    beta, H, p = newton(A, wins, games)
+    Hinv = np.linalg.inv(H)
+    model = Hinv * max(1.0, dispersion(A, wins, games, p))
+    cluster = None
+    if clusters is not None:
+        clusters = np.asarray(clusters)
+        groups = np.unique(clusters)
+        if len(groups) > 1:
+            S = A * (wins - games * p)[:, None]
+            G = np.array([S[clusters == g].sum(axis=0) for g in groups])
+            cluster = Hinv @ (G.T @ G) @ Hinv * len(groups) / (len(groups) - 1)
+    return beta, model, cluster
+
+
+def varying(C):
+    """The columns of C that vary in these rows (constant ones are collinear
+    with an intercept)."""
+    return C[:, C.min(axis=0) != C.max(axis=0)] if len(C) else C
 
 
 def to_points(beta, cov, k, q, scale):
