@@ -193,16 +193,19 @@ class DraftRecapScreen(ttk.Frame):
 
         # --- TAB 4: PICK REVIEW (trained pick model) ---
         tab_review = ttk.Frame(self.recap_notebook, padding=Theme.scaled_val(15))
-        self.recap_notebook.add(tab_review, text=" 🤖 Pick Review ")
+        self.recap_notebook.add(tab_review, text=" 🤖 Draft Review ")
         tab_review.columnconfigure(0, weight=1)
-        tab_review.rowconfigure(1, weight=1)
+        tab_review.rowconfigure(2, weight=1)
 
-        self._create_stat_box(tab_review, "MODEL AGREEMENT", "lbl_review_summary").grid(
+        self._create_stat_box(tab_review, "HOW THE DRAFT WENT", "lbl_draft_report").grid(
             row=0, column=0, sticky="ew", pady=Theme.scaled_val((0, 10))
+        )
+        self._create_stat_box(tab_review, "MODEL AGREEMENT", "lbl_review_summary").grid(
+            row=1, column=0, sticky="ew", pady=Theme.scaled_val((0, 10))
         )
 
         table_frame = ttk.Frame(tab_review)
-        table_frame.grid(row=1, column=0, sticky="nsew")
+        table_frame.grid(row=2, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
         table_frame.rowconfigure(0, weight=1)
         self.review_table = ttk.Treeview(
@@ -228,7 +231,56 @@ class DraftRecapScreen(ttk.Frame):
         scroll.grid(row=0, column=1, sticky="ns")
         self._review_signature = None
 
-    def update_pick_review(self, set_code, event_type, history, taken_cards, lookup):
+    def _final_deck(self, set_code, event_type, taken_cards, lookup, arena_logs):
+        """(maindeck names, where it came from): the deck you last clicked Done on in
+        Arena when it's from this pool, else the deck model's build."""
+        from src.deck_record import latest_submitted_deck
+        from src.advisor.deck_model import load_deck_model
+
+        pool = {c.get("name") for c in taken_cards}
+        deck = latest_submitted_deck(arena_logs) if arena_logs else None
+        if deck:
+            names = [c.get("name", "") for c in lookup([str(g) for g in deck["main"]]) if c]
+            spells = [n for n in names if n not in constants.BASIC_LANDS]
+            if spells and sum(n in pool for n in spells) >= 0.8 * len(spells):
+                return [c for c in lookup([str(g) for g in deck["main"]]) if c.get("name") in pool], "the deck you built"
+        model = load_deck_model(set_code, event_type)
+        if model is not None:
+            built = model.build(taken_cards)
+            if built:
+                return built, "the model's build (no Arena deck for this pool yet)"
+        return [], ""
+
+    def update_draft_report(self, set_code, event_type, history, taken_cards, lookup,
+                            metrics=None, arena_logs=None):
+        from src.advisor.draft_review import cards_per_pick, draft_report
+        from src.advisor.deck_check import deck_colors
+        from src.advisor.deck_scorer import get_card_rating
+
+        deck, source = self._final_deck(set_code, event_type, taken_cards, lookup, arena_logs)
+        spells = [c for c in deck if "Land" not in c.get("types", [])]
+        main, splash = deck_colors(spells) if spells else ([], [])
+        colors = main + splash
+        if not colors:
+            self.lbl_draft_report.config(text="Build your deck (and click Done in Arena) to see how the draft went.")
+            return
+        mean, std = metrics.get_metrics("All Decks", "gihwr") if metrics else (0.0, 0.0)
+        mean, std = mean or 54.0, std or 4.0
+        names = []
+        for c in deck:
+            names += [c.get("name", "")] * c.get("count", 1)
+        if history:
+            per_pick = cards_per_pick(sorted(history, key=lambda e: (e.get("Pack", 0), e.get("Pick", 0))))
+        else:
+            per_pick = 2 if "PickTwo" in str(event_type) else 1
+        lines = draft_report(taken_cards, colors, names, per_pick,
+                             rating=lambda c: get_card_rating(c, ["".join(main[:2])], metrics),
+                             strong=mean + std)
+        lines.insert(0, f"Measured against {source}.")
+        self.lbl_draft_report.config(text="\n".join(lines))
+
+    def update_pick_review(self, set_code, event_type, history, taken_cards, lookup,
+                           metrics=None, arena_logs=None):
         from src.advisor.pick_model import load_pick_model
         from src.advisor.draft_review import review_draft, summarize
 
@@ -237,6 +289,12 @@ class DraftRecapScreen(ttk.Frame):
             return
         self._review_signature = signature
         self.review_table.delete(*self.review_table.get_children())
+        try:
+            self.update_draft_report(set_code, event_type, history, taken_cards, lookup, metrics, arena_logs)
+        except Exception as e:
+            import logging
+
+            logging.getLogger(__name__).warning(f"Draft report error: {e}")
 
         model = load_pick_model(set_code, event_type)
         if model is None:

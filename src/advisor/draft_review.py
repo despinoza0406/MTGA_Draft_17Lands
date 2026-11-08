@@ -103,3 +103,84 @@ def summarize(reviews: List[PickReview], top_n: int = 5) -> Dict:
         "agreement": agreed / len(reviews) if reviews else 0.0,
         "biggest_misses": misses[:top_n],
     }
+
+
+def _on_colors(card: Dict, colors) -> bool:
+    from src.mana_cost import off_color_requirements
+
+    return not off_color_requirements(card, colors)
+
+
+def draft_report(taken_cards: List[Dict], colors: List[str], deck_names: List[str],
+                 per_pick: int = 1, rating=None, strong: float = 0.0) -> List[str]:
+    """Lines on how the draft went, measured against the deck you ended with.
+
+    taken_cards: your picks in pick order; colors: the final deck's colors;
+    deck_names: its maindeck card names; rating(card) -> win rate, with
+    `strong` the rate that counts as a strong card (for late signals)."""
+    if not taken_cards or not colors:
+        return []
+    per_pick = max(1, per_pick)
+    picks = [taken_cards[i:i + per_pick] for i in range(0, len(taken_cards), per_pick)]
+    per_pack = max(1, round(len(picks) / 3))
+
+    def where(i):
+        return i // per_pack + 1, i % per_pack + 1
+
+    def name(c):
+        return c.get(constants.DATA_FIELD_NAME, "")
+
+    def is_basic(c):
+        return name(c) in constants.BASIC_LANDS
+
+    lines = []
+    pair = "".join(colors)
+    by_pack = []
+    for pack in range(3):
+        cards = [c for p in picks[pack * per_pack:(pack + 1) * per_pack] for c in p if not is_basic(c)]
+        if cards:
+            by_pack.append(f"P{pack + 1} {sum(_on_colors(c, colors) for c in cards)}/{len(cards)}")
+    if by_pack:
+        lines.append(f"Cards in your final colors ({pair}): " + " · ".join(by_pack) + ".")
+
+    off = [i for i, p in enumerate(picks) if any(not _on_colors(c, colors) for c in p if not is_basic(c))]
+    if off and off[-1] < len(picks) - 1:
+        pack, pick = where(off[-1])
+        lines.append(f"Your last off-color pick was P{pack}p{pick}; from there on every pick was {pair}.")
+    elif not off:
+        lines.append(f"Every pick was {pair}: you were in your lane from the first pick.")
+
+    remaining = list(deck_names)
+    in_deck = []
+    for p in picks:
+        hits = 0
+        for c in p:
+            if name(c) in remaining:
+                remaining.remove(name(c))
+                hits += 1
+        in_deck.append(hits)
+    made = sum(in_deck)
+    if deck_names:
+        early = [(i, c) for i, p in enumerate(picks[:min(5, per_pack)]) for c in p]
+        missed, seen = [], list(deck_names)
+        for i, c in early:
+            if name(c) in seen:
+                seen.remove(name(c))
+            else:
+                missed.append(f"P1p{i + 1} {name(c)}")
+        per_pack_made = [sum(in_deck[k * per_pack:(k + 1) * per_pack]) for k in range(3)]
+        lines.append(f"{made} picks made your deck (by pack: {' / '.join(map(str, per_pack_made))}).")
+        if missed:
+            lines.append("Early picks that didn't make the deck: " + ", ".join(missed) + ".")
+
+    if rating is not None and strong:
+        late = []
+        for i, p in enumerate(picks):
+            pack, pick = where(i)
+            if pick > per_pack // 2:
+                late += [f"{name(c)} (P{pack}p{pick})" for c in p
+                         if _on_colors(c, colors) and not is_basic(c) and rating(c) >= strong]
+        if late:
+            lines.append("Strong cards in your colors that came late (a sign the lane was open): "
+                         + ", ".join(late[:5]) + ".")
+    return lines

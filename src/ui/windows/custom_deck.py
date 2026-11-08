@@ -245,6 +245,14 @@ class CustomDeckPanel(ttk.Frame):
         )
         self.btn_copy.pack(side="right", padx=Theme.scaled_val(5))
 
+        # Arena's event deck builder has no import: list what to click instead.
+        ttk.Button(
+            self.header,
+            text="📋 Arena steps",
+            bootstyle="info-outline",
+            command=self.show_arena_steps,
+        ).pack(side="right", padx=Theme.scaled_val(5))
+
         # Build in Arena, click Done, then pull that deck in here to analyze it.
         ttk.Button(
             self.header,
@@ -300,7 +308,32 @@ class CustomDeckPanel(ttk.Frame):
         )
         self.sb_manager.pack(fill="both", expand=True)
 
-        # 2. Stats Tab
+        # 2. Deck Check Tab: what the deck does well, what it's short of, swaps
+        self.check_tab = ttk.Frame(self.notebook, padding=Theme.scaled_val(10))
+        self.notebook.add(self.check_tab, text=" DECK CHECK ")
+        self.check_tab.rowconfigure(0, weight=1)
+        self.check_tab.columnconfigure(0, weight=1)
+        self.check_text = tkinter.Text(
+            self.check_tab, wrap="word", relief="flat", borderwidth=0,
+            bg=Theme.BG_PRIMARY, fg=Theme.TEXT_MAIN, font=Theme.scaled_font(10),
+            padx=Theme.scaled_val(8), pady=Theme.scaled_val(6), cursor="arrow",
+            highlightthickness=0,
+        )
+        check_scroll = AutoScrollbar(self.check_tab, orient="vertical", command=self.check_text.yview)
+        self.check_text.configure(yscrollcommand=check_scroll.set)
+        self.check_text.grid(row=0, column=0, sticky="nsew")
+        check_scroll.grid(row=0, column=1, sticky="ns")
+        tag = self.check_text.tag_configure
+        tag("h", font=Theme.scaled_font(11, "bold"), spacing1=Theme.scaled_val(10), spacing3=Theme.scaled_val(4))
+        tag("big", font=Theme.scaled_font(13, "bold"), spacing3=Theme.scaled_val(4))
+        tag("good", foreground=Theme.SUCCESS, font=Theme.scaled_font(10, "bold"))
+        tag("fix", foreground=Theme.WARNING, font=Theme.scaled_font(10, "bold"))
+        tag("info", foreground=Theme.TEXT_MUTED, font=Theme.scaled_font(10, "bold"))
+        tag("muted", foreground=Theme.TEXT_MUTED)
+        tag("line", spacing3=Theme.scaled_val(5), lmargin2=Theme.scaled_val(22))
+        self.check_text.configure(state="disabled")
+
+        # 3. Stats Tab
         self.stats_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.stats_tab, text=" STATS & ANALYSIS ")
         self.stats_canvas = tkinter.Canvas(
@@ -334,7 +367,7 @@ class CustomDeckPanel(ttk.Frame):
         bind_scroll(self.stats_canvas, self.stats_canvas.yview_scroll)
         bind_scroll(self.stats_frame, self.stats_canvas.yview_scroll)
 
-        # 3. Sim & Hand Tab
+        # 4. Sim & Hand Tab
         self.hand_tab = ttk.Frame(self.notebook, padding=Theme.scaled_val(15))
         self.notebook.add(self.hand_tab, text=" SIMULATION & SAMPLE HAND ")
         self.hand_tab.columnconfigure(0, weight=3)
@@ -1480,7 +1513,124 @@ class CustomDeckPanel(ttk.Frame):
         populate_tree(self.deck_manager, self.deck_list, False)
         populate_tree(self.sb_manager, self.sb_list, True)
 
+    def _event(self):
+        try:
+            return self.draft.retrieve_current_limited_event()
+        except Exception:
+            return "", ""
+
+    def _metrics(self):
+        try:
+            return self.draft.retrieve_set_metrics()
+        except Exception:
+            return None
+
+    def _render_deck_check(self):
+        from src.advisor.deck_check import check_deck
+        from src.advisor.deck_model import load_deck_model
+
+        text = self.check_text
+        text.configure(state="normal")
+        text.delete("1.0", "end")
+        if not self.deck_list:
+            text.insert("end", "Build a deck (or send one here from Suggest Deck / Load Arena deck) "
+                               "and this tab checks it: what it does well, what it's short of, and "
+                               "which sideboard cards would make it better.", "muted")
+            text.configure(state="disabled")
+            return
+        set_code, event = self._event()
+        sets = [c.get("set") for c in self.deck_list + self.sb_list if c.get("set")]
+        set_code = set_code or (max(set(sets), key=sets.count) if sets else "")
+        model = load_deck_model(set_code, event) if set_code else None
+        result = check_deck(self.deck_list, self.sb_list, self._metrics(), model,
+                            is_bo3="Trad" in str(event))
+
+        colors = "".join(result.colors) + (f" + {''.join(result.splash)}" if result.splash else "")
+        line = f"{colors or 'Colorless'} · Est. {result.estimate}" if result.estimate else colors
+        text.insert("end", line + "\n", "big")
+        if result.model_estimate:
+            spells = sum(c.get("count", 1) for c in self.deck_list if "Land" not in c.get("types", []))
+            text.insert("end", f"🤖 Model build in these colors: Est. {result.model_estimate} · "
+                               f"{result.model_same} of your {spells} spells are the same.\n", "muted")
+
+        groups = (("good", "✔ What's working"), ("fix", "⚠ What to improve"), ("info", "ℹ Worth knowing"))
+        icons = {"good": "✔", "fix": "⚠", "info": "ℹ"}
+        for level, title in groups:
+            notes = [n for n in result.notes if n.level == level]
+            if not notes:
+                continue
+            text.insert("end", title + "\n", "h")
+            for n in notes:
+                text.insert("end", f"{icons[level]} {n.title}: ", level)
+                text.insert("end", n.text + "\n", "line")
+        if result.swaps:
+            text.insert("end", "⇄ Swaps to consider\n", "h")
+            for sw in result.swaps:
+                text.insert("end", f"⇄ {sw.out} → {sw.into}: ", "fix")
+                text.insert("end", sw.reason + "\n", "line")
+        elif result.notes:
+            text.insert("end", "\nNo sideboard card clearly beats one you play.\n", "muted")
+        text.configure(state="disabled")
+
+    def _arena_current_main(self):
+        """Names in the deck you last clicked Done on in Arena, when it's from this pool."""
+        from src.deck_record import latest_submitted_deck
+
+        player_log = self.configuration.settings.arena_log_location
+        paths = [os.path.join(os.path.dirname(player_log), "Player-prev.log"), player_log] if player_log else []
+        deck = latest_submitted_deck(paths)
+        if not deck:
+            return None
+        names = [c.get("name", "") for c in (self._arena_card(g) for g in deck["main"]) if c]
+        pool = {c.get("name") for c in self.deck_list + self.sb_list}
+        spells = [n for n in names if n not in constants.BASIC_LANDS]
+        if not spells or sum(n in pool for n in spells) < 0.8 * len(spells):
+            return None
+        return names
+
+    def show_arena_steps(self):
+        from src.advisor.deck_check import arena_steps
+
+        if not self.deck_list:
+            return
+        current = self._arena_current_main()
+        steps = arena_steps(self.deck_list, current)
+        intro = ("Changes from the deck you last clicked Done on in Arena:" if current is not None
+                 else "Arena's deck builder starts empty: click these cards in your pool.")
+        win = tkinter.Toplevel(self)
+        win.title("Build it in Arena")
+        win.configure(bg=Theme.BG_PRIMARY)
+        win.transient(self.winfo_toplevel())
+        ttk.Label(win, text=intro, font=Theme.scaled_font(10, "bold"), wraplength=Theme.scaled_val(380)).pack(
+            anchor="w", padx=Theme.scaled_val(12), pady=Theme.scaled_val((10, 4)))
+        ttk.Label(win, text="Arena has no import inside events, so this is the shortest route.",
+                  font=Theme.scaled_font(9), bootstyle="secondary").pack(anchor="w", padx=Theme.scaled_val(12))
+        box = tkinter.Text(win, width=44, height=min(30, steps.count("\n") + 2), relief="flat",
+                           bg=Theme.BG_SECONDARY, fg=Theme.TEXT_MAIN, font=Theme.scaled_font(10),
+                           padx=Theme.scaled_val(8), pady=Theme.scaled_val(6), highlightthickness=0)
+        box.insert("1.0", steps)
+        box.configure(state="disabled")
+        box.pack(fill="both", expand=True, padx=Theme.scaled_val(12), pady=Theme.scaled_val(8))
+        bar = ttk.Frame(win)
+        bar.pack(fill="x", padx=Theme.scaled_val(12), pady=Theme.scaled_val((0, 10)))
+
+        def copy():
+            self.clipboard_clear()
+            self.clipboard_append(steps)
+            btn.config(text="Copied ✔")
+
+        btn = ttk.Button(bar, text="Copy", bootstyle="primary", command=copy)
+        btn.pack(side="right")
+        ttk.Button(bar, text="Close", bootstyle="secondary", command=win.destroy).pack(
+            side="right", padx=Theme.scaled_val(6))
+
     def _render_deck_stats(self):
+        try:
+            self._render_deck_check()
+        except Exception as e:
+            import logging
+
+            logging.getLogger(__name__).warning(f"Deck check error: {e}")
         for widget in self.stats_frame.winfo_children():
             widget.destroy()
 

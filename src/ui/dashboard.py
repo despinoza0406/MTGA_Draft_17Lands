@@ -5,6 +5,7 @@ Supports dynamic grid layouts that auto-adjust based on pack/wheel card counts.
 Features built-in state management for onboarding UX and waiting screens.
 """
 
+import os
 import tkinter
 from tkinter import ttk
 from typing import List, Dict, Any, Optional
@@ -273,12 +274,17 @@ class DashboardFrame(ttk.Frame):
             scanner = getattr(getattr(self, "orchestrator", None), "scanner", None)
             if scanner and taken_cards and len(taken_cards) >= 40:
                 try:
+                    log = getattr(getattr(self, "configuration", None), "settings", None)
+                    log = getattr(log, "arena_log_location", "") or ""
+                    logs = [os.path.join(os.path.dirname(log), "Player-prev.log"), log] if log else None
                     self.recap_screen.update_pick_review(
                         self._current_event_set,
                         self._current_event_type,
                         scanner.retrieve_draft_history(),
                         taken_cards,
                         scanner.set_data.get_data_by_id,
+                        metrics,
+                        logs,
                     )
                 except Exception as e:
                     logging.getLogger(__name__).warning(f"Pick review error: {e}")
