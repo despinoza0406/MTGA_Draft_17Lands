@@ -2,18 +2,18 @@
 training/prerelease/prerelease.py
 Day-1 card ratings for a set with no 17Lands games yet.
 
-MTGAZone publishes a pre-release Limited review for every set, one 0-5 rating
-per card. Past sets show how those ratings turned into 17Lands GIH WR, and
-where they were wrong (rares rated on their ceiling, cheap commons and removal
-underrated). This script
+MTGAZone (0-5) and Draftsim (0-10) publish a pre-release Limited review for
+every set, one rating per card. Past sets show how those ratings turned into
+17Lands GIH WR, and where they were wrong (rares rated on their ceiling, cheap
+commons and removal underrated). This script
 
-    reviews  <SET> [<SET> ...]   downloads the reviews (cached in --data-dir)
+    reviews  <SET> [<SET> ...]   downloads both reviews (cached in --data-dir)
     calibrate                    fits review + card features -> GIH WR on every
                                  past set that has both a review and a dataset,
                                  checks it one held-out set at a time, saves it
     build    <SET>               writes <SET>_<EVENT>_All_Data.json into the
                                  tool's Sets folder from Scryfall's card list,
-                                 the review and the calibration
+                                 the reviews and the calibration
 
 Usage:
     python training/prerelease/prerelease.py reviews TRK FRA BLB --data-dir data
@@ -26,6 +26,7 @@ data for the set.
 """
 
 import argparse
+import html as htmllib
 import json
 import os
 import re
@@ -64,9 +65,12 @@ def _get(url, timeout=60):
         return 0, ""
 
 
+SOURCES = ("mtgazone", "draftsim")
+
+
 def parse_ratings(html):
-    """{card slug: rating} from one review page. Each rating ("Rating: 3.5/5", or
-    "3.5 // 5.0" in older reviews) belongs to the last card link before it."""
+    """MTGAZone: {card slug: rating} from one review page. Each rating ("Rating: 3.5/5",
+    or "3.5 // 5.0" in older reviews) belongs to the last card link before it."""
     out = {}
     for m in re.finditer(r"Rating:\s*([0-9.]+)\s*/{1,2}\s*5", html):
         slugs = re.findall(r"mtgazone\.com/cards/([a-z0-9-]+)/", html[max(0, m.start() - 6000):m.start()])
@@ -75,8 +79,20 @@ def parse_ratings(html):
     return out
 
 
+def parse_draftsim(html):
+    """Draftsim: {card name: rating} from its one-page review. Each "Rating: 7/10"
+    belongs to the last card heading before it."""
+    out = {}
+    for m in re.finditer(r"Rating:\s*([0-9.]+)\s*/\s*10", html):
+        heads = re.findall(r"<h3[^>]*>(.*?)</h3>", html[max(0, m.start() - 8000):m.start()], re.S)
+        if heads:
+            name = htmllib.unescape(re.sub(r"<[^>]+>", "", heads[-1])).strip()
+            out[name] = float(m.group(1))
+    return out
+
+
 def review_pages(code):
-    """The set's review pages, found through MTGAZone's search."""
+    """The set's MTGAZone review pages, found through its search."""
     pattern = re.compile(r"https://mtgazone\.com/([a-z0-9-]*-%s)-limited-set-review-[a-z0-9-]*/" % code.lower())
     bases = set()
     for query in (f"{code} limited set review", f"{code} limited set review white"):
@@ -85,8 +101,17 @@ def review_pages(code):
     return [f"https://mtgazone.com/{b}-limited-set-review-{p}/" for b in sorted(bases) for p in REVIEW_PAGES]
 
 
-def fetch_reviews(code, folder):
-    path = os.path.join(folder, f"{code}.json")
+def set_name_slug(code):
+    try:
+        req = urllib.request.Request(f"https://api.scryfall.com/sets/{code.lower()}", headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=60) as r:
+            name = json.load(r).get("name", "")
+    except Exception:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower().replace("'", "")).strip("-")
+
+
+def fetch_mtgazone(code):
     found, pages = {}, []
     for url in review_pages(code):
         status, html = _get(url)
@@ -95,11 +120,53 @@ def fetch_reviews(code, folder):
             found.update(ratings)
             pages.append(url)
         time.sleep(0.3)
-    print(f"{code}: {len(pages)} review pages, {len(found)} cards")
-    if found:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"pages": pages, "ratings": found}, f, indent=0)
-    return found
+    return found, pages
+
+
+def fetch_draftsim(code):
+    name = set_name_slug(code)
+    for url in [f"https://draftsim.com/mtg-{code.lower()}-limited-set-review/"] + (
+            [f"https://draftsim.com/{name}-limited-set-review/", f"https://draftsim.com/mtg-{name}-limited-set-review/"]
+            if name else []):
+        status, html = _get(url)
+        ratings = parse_draftsim(html) if status == 200 else {}
+        if len(ratings) >= MIN_CARDS:
+            return ratings, [url]
+        time.sleep(0.3)
+    return {}, []
+
+
+def fetch_reviews(code, review_dir, sources=SOURCES):
+    for source in sources:
+        folder = os.path.join(review_dir, source)
+        os.makedirs(folder, exist_ok=True)
+        found, pages = (fetch_mtgazone if source == "mtgazone" else fetch_draftsim)(code)
+        print(f"{code} {source}: {len(pages)} pages, {len(found)} cards")
+        if found:
+            with open(os.path.join(folder, f"{code}.json"), "w", encoding="utf-8") as f:
+                json.dump({"pages": pages, "ratings": found}, f, indent=0)
+
+
+def load_reviews(code, review_dir):
+    """{source: {card key: rating}} for the sources that reviewed the set."""
+    out = {}
+    for source in SOURCES:
+        path = os.path.join(review_dir, source, f"{code}.json")
+        if source == "mtgazone" and not os.path.exists(path):
+            path = os.path.join(review_dir, f"{code}.json")  # the first layout: MTGAZone only
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                out[source] = {key(k): v for k, v in json.load(f)["ratings"].items()}
+    return out
+
+
+def standardize(reviews):
+    """Each source's ratings as z-scores within the set: their scales differ."""
+    out = {}
+    for source, ratings in reviews.items():
+        v = np.array(list(ratings.values()), float)
+        out[source] = {k: float((x - v.mean()) / (v.std() or 1.0)) for k, x in ratings.items()}
+    return out
 
 
 # ---------------------------------------------------------------- features and fit
@@ -111,25 +178,30 @@ def key(name):
     return re.sub(r"[^a-z0-9]+", "", name)
 
 
-def features(card, rating):
+def features(card, zs):
+    """zs: {source: z-scored rating} for the sources that reviewed this card."""
     colors = card.get("colors") or []
     tags = card.get("tags") or []
     cmc = float(card.get("cmc") or 0)
     rare = card.get("rarity") in ("rare", "mythic")
     gold = len(colors) >= 2
+    consensus = float(np.mean(list(zs.values())))
     return [
-        1.0, rating, rating ** 2,
+        1.0, consensus, consensus ** 2, len(zs) - 1,
+        # A missing source reads as the others' consensus.
+        *[zs.get(source, consensus) for source in SOURCES],
         card.get("rarity") == "uncommon", card.get("rarity") == "rare", card.get("rarity") == "mythic",
         gold, not colors, "removal" in tags, "card_advantage" in tags,
         "Creature" in card.get("types", []), "Land" in card.get("types", []),
         cmc <= 2, cmc >= 5,
         # Reviewers rate rares on their ceiling: their slope differs.
-        rating * rare, rating * gold,
+        consensus * rare, consensus * gold,
     ]
 
 
-FEATURES = ["const", "rating", "rating^2", "uncommon", "rare", "mythic", "gold", "colorless", "removal",
-            "card_advantage", "creature", "land", "cmc<=2", "cmc>=5", "rating*rare", "rating*gold"]
+FEATURES = ["const", "consensus", "consensus^2", "extra sources", *[f"z {source}" for source in SOURCES],
+            "uncommon", "rare", "mythic", "gold", "colorless", "removal", "card_advantage", "creature", "land",
+            "cmc<=2", "cmc>=5", "consensus*rare", "consensus*gold"]
 
 
 def spearman(a, b):
@@ -146,46 +218,64 @@ def fit(rows, lam=3.0):
 
 
 def past_set_rows(code, review_dir, sets_dir):
-    """Cards of a past set with both a review rating and a 17Lands GIH WR,
-    with GIH WR standardized within the set."""
-    review_path = os.path.join(review_dir, f"{code}.json")
+    """Cards of a past set with a review and a 17Lands GIH WR, with GIH WR
+    standardized within the set."""
     data_path = os.path.join(sets_dir, f"{code}_PremierDraft_All_Data.json")
-    if not (os.path.exists(review_path) and os.path.exists(data_path)):
+    zs = standardize(load_reviews(code, review_dir))
+    if not zs or not os.path.exists(data_path):
         return []
-    with open(review_path, encoding="utf-8") as f:
-        reviews = {key(k): v for k, v in json.load(f)["ratings"].items()}
     with open(data_path, encoding="utf-8") as f:
-        cards = json.load(f)["card_ratings"]
+        dataset = json.load(f)
+    if dataset.get("meta", {}).get("predicted"):
+        return []  # our own prediction, not 17Lands results
+    cards = dataset["card_ratings"]
     rows, seen = [], set()
     for c in cards.values():
         k = key(c.get("name", ""))
         gih = c.get("deck_colors", {}).get("All Decks", {}).get("gihwr")
-        if k in reviews and gih and k not in seen:
+        src ={s: z[k] for s, z in zs.items() if k in z}
+        if src and gih and k not in seen:
             seen.add(k)
-            rows.append({"set": code, "name": c["name"], "rating": reviews[k], "gih": float(gih),
-                         "x": features(c, reviews[k])})
-    if len(rows) >= MIN_CARDS:
-        g = np.array([r["gih"] for r in rows])
-        for r, z in zip(rows, (g - g.mean()) / g.std()):
-            r["z"] = float(z)
-    return rows if len(rows) >= MIN_CARDS else []
+            rows.append({"set": code, "name": c["name"], "src": src, "gih": float(gih), "x": features(c, src)})
+    if len(rows) < MIN_CARDS:
+        return []
+    g = np.array([r["gih"] for r in rows])
+    for r, z in zip(rows, (g - g.mean()) / g.std()):
+        r["z"] = float(z)
+    return rows
 
 
 def calibrate(review_dir, sets_dir, out_path):
-    codes = sorted(f[:-5] for f in os.listdir(review_dir) if f.endswith(".json"))
-    data = {c: rows for c in codes if (rows := past_set_rows(c, review_dir, sets_dir))}
+    codes = {f[:-5] for f in os.listdir(review_dir) if f.endswith(".json")}
+    for source in SOURCES:
+        folder = os.path.join(review_dir, source)
+        if os.path.isdir(folder):
+            codes |= {f[:-5] for f in os.listdir(folder) if f.endswith(".json")}
+    data = {c: rows for c in sorted(codes) if (rows := past_set_rows(c, review_dir, sets_dir))}
     if len(data) < 2:
         raise SystemExit("Need reviews and datasets for at least two past sets.")
-    print(f"{'set':5s} {'cards':>5s} {'review':>7s} {'fit':>6s}   (spearman with GIH WR, set held out)")
-    gains = []
+    columns = [*SOURCES, "consensus", "fit"]
+    print(f"{'set':5s} {'cards':>5s} " + " ".join(f"{c:>9s}" for c in columns) + "   (spearman with GIH WR, set held out)")
+    scores = {c: [] for c in columns}
     for code, rows in data.items():
         w = fit([r for c, v in data.items() if c != code for r in v])
-        pred = [float(np.dot(w, r["x"])) for r in rows]
         gih = [r["gih"] for r in rows]
-        a, b = spearman([r["rating"] for r in rows], gih), spearman(pred, gih)
-        gains.append(b - a)
-        print(f"{code:5s} {len(rows):5d} {a:7.2f} {b:6.2f}")
-    print(f"mean gain {np.mean(gains):+.3f} over the review alone, better in {sum(g > 0 for g in gains)} of {len(gains)} sets")
+        line = f"{code:5s} {len(rows):5d}"
+        for source in SOURCES:
+            sub = [r for r in rows if source in r["src"]]
+            if len(sub) >= MIN_CARDS:
+                v = spearman([r["src"][source] for r in sub], [r["gih"] for r in sub])
+                scores[source].append(v)
+                line += f" {v:9.2f}"
+            else:
+                line += f" {'-':>9s}"
+        for column, pred in (("consensus", [np.mean(list(r["src"].values())) for r in rows]),
+                             ("fit", [float(np.dot(w, r["x"])) for r in rows])):
+            v = spearman(pred, gih)
+            scores[column].append(v)
+            line += f" {v:9.2f}"
+        print(line)
+    print(f"{'mean':11s} " + " ".join(f"{np.mean(v):9.2f}" if v else f"{'-':>9s}" for v in scores.values()))
     w = fit([r for v in data.values() for r in v])
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump({"features": FEATURES, "weights": [float(v) for v in w], "sets": list(data)}, f, indent=1)
@@ -245,19 +335,24 @@ def card_list(code):
 
 
 def predicted_dataset(code, cards, reviews, calibration, today):
-    """The tool's dataset dict. Cards without a review are left out (unrated)."""
+    """The tool's dataset dict. reviews: {source: {card name or slug: rating}}.
+    Cards no source reviewed are left out (unrated)."""
+    if calibration.get("features") != FEATURES:
+        raise SystemExit("The calibration was made with other features: run calibrate again.")
     w = np.array(calibration["weights"])
-    reviews = {key(k): v for k, v in reviews.items()}
+    zs = standardize({s: {key(k): v for k, v in r.items()} for s, r in reviews.items()})
+    raw = {s: {key(k): v for k, v in r.items()} for s, r in reviews.items()}
     ratings, z = {}, {}
     for name, c in cards.items():
         k = key(name)
-        if "Basic" in c["types"] or k not in reviews:
+        src = {s: v[k] for s, v in zs.items() if k in v}
+        if "Basic" in c["types"] or not src:
             continue
         card = {f: v for f, v in c.items() if f != "collector_number"}
-        card["review_rating"] = reviews[k]
+        card["review_ratings"] = {s: raw[s][k] for s in src}
         card_id = f"{code.upper()}{c.get('collector_number') or len(ratings)}"
         ratings[card_id] = card
-        z[card_id] = float(np.dot(w, features(c, reviews[k])))
+        z[card_id] = float(np.dot(w, features(c, src)))
     if not ratings:
         return None
     # Predictions shrink toward the mean; spread them like a real set so the
@@ -270,16 +365,18 @@ def predicted_dataset(code, cards, reviews, calibration, today):
             "iwd": 0.0, "samples": 0, "seen_count": 0, "pick_count": 0, "game_count": 0, "play_rate": 0.0}}
     meta = {"collection_date": today, "start_date": today, "end_date": today, "version": 3.0, "game_count": 0,
             "predicted": True,
-            "source": "Predicted from MTGAZone's pre-release review, calibrated on " + ", ".join(calibration["sets"])}
+            "source": "Predicted from " + " and ".join(sorted(reviews)) + " pre-release reviews, calibrated on "
+                      + ", ".join(calibration["sets"])}
     return {"meta": meta, "color_ratings": {}, "card_ratings": ratings}
 
 
 def build(code, review_dir, sets_dir, calibration_path, events):
-    review_path = os.path.join(review_dir, f"{code}.json")
-    if not os.path.exists(review_path):
-        fetch_reviews(code, review_dir)
-    with open(review_path, encoding="utf-8") as f:
-        reviews = json.load(f)["ratings"]
+    missing = [s for s in SOURCES if s not in load_reviews(code, review_dir)]
+    if missing:
+        fetch_reviews(code, review_dir, missing)
+    reviews = load_reviews(code, review_dir)
+    if not reviews:
+        raise SystemExit(f"No review found for {code}.")
     with open(calibration_path, encoding="utf-8") as f:
         calibration = json.load(f)
     cards = card_list(code)
