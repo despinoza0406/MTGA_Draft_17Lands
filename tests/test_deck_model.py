@@ -129,3 +129,24 @@ def test_model_variants_add_another_pair_only_when_it_is_a_real_deck(tmp_path, m
     assert f"{MODEL_VARIANT} (alt)" in labels
     for _, deck, _ in builds:
         assert sum(c.get("count", 1) for c in deck) == 40
+
+
+def test_model_variant_drops_an_unsupported_double_pip_splash(tmp_path, monkeypatch):
+    """The model loves a {B}{B} bomb in a UR pool with no black fixing; the build doesn't."""
+    blue = [spell(f"Blue {i}") for i in range(12)]
+    red = [spell(f"Red {i}", "R") for i in range(12)]
+    bomb = {**spell("Bomb", "B"), "mana_cost": "{2}{B}{B}", "cmc": 4}
+    single = {**spell("Single", "B"), "mana_cost": "{2}{B}", "cmc": 3}
+    fixer = {"name": "Swamp Dual", "types": ["Land"], "colors": ["U", "B"], "set": "TST",
+             "oracle_text": "{T}: Add {U} or {B}."}
+    names = [c["name"] for c in blue + red] + ["Bomb", "Single", "Spare", "Swamp Dual"]
+    spare = spell("Spare")
+    model = DeckModel(write_model(tmp_path / "m.npz", names, [4.0] * 24 + [6.0, 6.0, -1.0, -6.0]))
+    monkeypatch.setattr(deck_model, "load_deck_model", lambda set_code, event: model)
+
+    deck, _ = build_variant_model(blue + red + [bomb, single, spare])
+    assert not {"Bomb", "Single"} & {c["name"] for c in deck}  # no fixing at all
+
+    deck, _ = build_variant_model(blue + red + [bomb, single, spare, fixer])
+    names_in = {c["name"] for c in deck}
+    assert "Single" in names_in and "Bomb" not in names_in  # one source carries one pip, not two

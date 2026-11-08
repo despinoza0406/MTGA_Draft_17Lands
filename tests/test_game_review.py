@@ -331,8 +331,12 @@ def test_weaker_card_cast_first_and_flash_is_instant_speed():
 PRIORITY_CARDS = {
     "20": {"name": "Big Flyer", "types": ["Creature"], "cmc": 3, "mana_cost": "{1}{U}{U}",
            "deck_colors": {"All Decks": {"gihwr": 61.0}}},
-    "21": {"name": "Wall", "types": ["Creature"], "cmc": 5, "mana_cost": "{4}{U}",
+    "21": {"name": "Wall", "types": ["Creature"], "cmc": 3, "mana_cost": "{2}{U}",
            "deck_colors": {"All Decks": {"gihwr": 55.0}}},
+    "23": {"name": "Filler", "types": ["Sorcery"], "cmc": 3, "mana_cost": "{2}{U}",
+           "deck_colors": {"All Decks": {"gihwr": 55.0}}},
+    "24": {"name": "Two Drop", "types": ["Creature"], "cmc": 2, "mana_cost": "{1}{U}",
+           "deck_colors": {"All Decks": {"gihwr": 62.0}}},
     "22": {"name": "Draw Spell", "types": ["Sorcery"], "cmc": 3, "mana_cost": "{2}{U}",
            "deck_colors": {"All Decks": {"gihwr": 55.0}}},
 }
@@ -363,9 +367,22 @@ def test_priority_under_pressure_with_a_sturdier_blocker_is_info():
 
 
 def test_priority_without_pressure_is_review():
-    g = game(priority_turns(opp_power=0, cast=[21]), card_stats={20: [3, 3], 21: [3, 5]})
+    g = game(priority_turns(opp_power=0, cast=[23]), card_stats={20: [3, 3]})
     found = weaker(review_game(g, plk))
     assert len(found) == 1 and found[0].level == "review"
+
+
+def test_leading_with_the_lesser_threat_is_info():
+    # Both are threats and you weren't under pressure: baiting removal is a plan.
+    g = game(priority_turns(opp_power=0, cast=[21]), card_stats={20: [3, 3], 21: [3, 5]})
+    found = weaker(review_game(g, plk))
+    assert len(found) == 1 and found[0].level == "info" and "draw out their removal" in found[0].text
+
+
+def test_a_cheaper_better_card_that_wastes_mana_is_not_flagged():
+    turns = priority_turns(opp_power=0, cast=[23])
+    turns[1].end_hand = [24]
+    assert not weaker(review_game(game(turns), plk))
 
 
 def test_priority_skips_a_planned_double_spell():
@@ -492,8 +509,12 @@ def test_unrated_card_is_not_called_weaker():
 def test_held_land_with_mana_to_spare_is_not_a_missed_drop():
     bluff = TurnLog(15, True, end_hand=[3], end_hand_lands=1, lands_on_battlefield=6, end_untapped_lands=4)
     assert not any(f.kind == "Missed land drop" for f in review_game(game([bluff]), lookup))
-    tapped_out = TurnLog(15, True, end_hand=[3], end_hand_lands=1, lands_on_battlefield=6, end_untapped_lands=0)
-    assert any(f.kind == "Missed land drop" for f in review_game(game([tapped_out]), lookup))
+    only_lands = TurnLog(15, True, end_hand=[3], end_hand_lands=1, lands_on_battlefield=6, end_untapped_lands=0)
+    assert not any(f.kind == "Missed land drop" for f in review_game(game([only_lands]), lookup))
+    cards = {**CARDS, "10": {"name": "Seven Drop", "types": ["Creature"], "cmc": 7, "mana_cost": "{6}{R}"}}
+    needs_it = TurnLog(15, True, end_hand=[3, 10], end_hand_lands=1, lands_on_battlefield=6, end_untapped_lands=0)
+    found = review_game(game([needs_it]), lambda ids: [cards[i] for i in ids if i in cards])
+    assert any(f.kind == "Missed land drop" for f in found)
 
 
 def test_removal_cast_on_their_turn_is_not_held():
@@ -578,3 +599,79 @@ def test_no_blocks_uses_evasion_at_combat_time():
     step = _combat_step([], [[1, 4, 5, False, None, None, []]])
     step["combat"]["evasion"] = {"7": ["flying"], "8": ["flying"], "1": []}
     assert not [f for f in review_game(game([], timeline=[step]), lookup) if f.kind == "No blocks"]
+
+
+def board_step(n, mine, theirs):
+    """Timeline step for turn n: mine/theirs are (power, toughness, tapped) creatures."""
+    entry = lambda i, c: [100 + i, c[0], c[1], c[2], None, None, []]
+    return {"turn": n, "active": "you", "end": {"my_board": [entry(i, c) for i, c in enumerate(mine)],
+                                              "opp_board": [entry(50 + i, c) for i, c in enumerate(theirs)]}}
+
+
+def risky_game(mine, theirs, life=8, opp_life=20):
+    turn = TurnLog(9, True, lands_played=1, attackers=sum(1 for c in mine if c[2]), eligible_attackers=len(mine),
+                   life_end=life, opponent_life_end=opp_life, opponent_power=sum(c[0] for c in theirs),
+                   opponent_creatures=len(theirs), my_creatures=len(mine), lands_on_battlefield=5)
+    return game([turn, TurnLog(10, False)], timeline=[board_step(9, mine, theirs)])
+
+
+def risky(g):
+    return [f for f in review_game(g, lookup) if f.kind == "Risky attack"]
+
+
+def test_attack_that_keeps_enough_blockers_home_is_fine():
+    # Attacked with one, kept two blockers for their two creatures.
+    assert not risky(risky_game([(2, 2, True), (3, 3, False), (3, 3, False)], [(4, 4, False), (3, 3, False)]))
+
+
+def test_attack_that_opens_the_swing_back_is_flagged():
+    found = risky(risky_game([(3, 3, True), (3, 3, True)], [(4, 4, False), (3, 3, False)], life=8))
+    assert len(found) == 1 and found[0].level == "review" and "about 7" in found[0].text
+
+
+def test_attack_is_not_blamed_when_staying_home_loses_too():
+    # Their fliers get through either way: attacking is committing to your plan.
+    theirs = [(5, 5, False), (4, 4, False)]
+    g = risky_game([(3, 3, True)], theirs, life=6)
+    for e in g.timeline[0]["end"]["opp_board"]:
+        e[6] = ["flying"]
+    assert not risky(g)
+
+
+def test_attack_that_sets_up_lethal_is_a_race():
+    found = risky(risky_game([(5, 5, True), (5, 5, True)], [(4, 4, False), (3, 3, False)], life=8, opp_life=6))
+    assert len(found) == 1 and found[0].level == "info" and "race" in found[0].text
+
+
+def test_land_held_for_a_discard_cost_is_not_a_missed_drop():
+    cards = {**CARDS, "7": {"name": "Twinned Vision", "types": ["Instant"], "cmc": 2, "mana_cost": "{1}{U}",
+                            "oracle_text": "Draw a card.\nFlashback—{1}{U}{U}, Discard a card."}}
+    turn = TurnLog(7, True, lands_played=0, end_hand=[3], end_hand_lands=1, lands_on_battlefield=3)
+    g = game([turn], timeline=[{"turn": 7, "active": "you", "end": {"my_graveyard": [7]}}])
+    found = review_game(g, lambda ids: [cards[i] for i in ids if i in cards])
+    assert not any(f.kind == "Missed land drop" for f in found)
+    assert any("Twinned Vision can discard it" in f.text for f in found)
+
+
+def test_cards_that_need_more_mana_to_work_are_not_unused_mana():
+    cards = {**CARDS,
+             "8": {"name": "Relic", "types": ["Artifact"], "cmc": 1, "mana_cost": "{B}", "tags": ["removal"],
+                   "oracle_text": "When this Equipment enters, you may pay {2}. When you do, destroy target creature."},
+             "9": {"name": "Blast", "types": ["Sorcery"], "cmc": 1, "mana_cost": "{X}{R}"}}
+    turn = TurnLog(3, True, lands_played=1, end_hand=[8, 9], end_untapped_lands=1, end_untapped_colors=["B"],
+                   lands_on_battlefield=1, opponent_creatures=1)
+    found = review_game(game([turn]), lambda ids: [cards[i] for i in ids if i in cards])
+    assert not any(f.kind == "Unused mana" for f in found)
+
+
+def test_removal_with_no_target_is_not_unused_mana():
+    turn = TurnLog(3, True, lands_played=1, end_hand=[6], end_untapped_lands=2, end_untapped_colors=["B", "B"],
+                   lands_on_battlefield=2, opponent_creatures=0)
+    assert not any(f.kind == "Unused mana" for f in review_game(game([turn]), lookup))
+
+
+def test_no_attack_is_fine_when_your_creature_is_needed_on_defense():
+    turn = TurnLog(9, True, lands_played=1, eligible_attackers=1, opponent_blockers=0, attackers=0, life_end=6,
+                   opponent_creatures=2, opponent_power=7, my_creatures=1, lands_on_battlefield=5)
+    g = game([turn, TurnLog(10, False)], timeline=[board_step(9, [(2, 2, False)], [(4, 4, True), (3, 3, True)])])
+    assert not any(f.kind == "No attack into an empty board" for f in review_game(g, lookup))

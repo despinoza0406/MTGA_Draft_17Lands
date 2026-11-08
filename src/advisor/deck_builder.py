@@ -773,6 +773,23 @@ def build_variant_consistency(pool, colors, metrics, tier_data=None):
     return stack_cards(spells + non_basic_lands + basics)
 
 
+def _splash_ok(card, main, fixing):
+    """Whether a card is castable in a deck of the main colors: on color, or a
+    splash its color's fixing supports (the card itself doesn't count as fixing)."""
+    off = off_color_requirements(card, main)
+    if not off or "Land" in card.get("types", []):
+        return True
+    for color in constants.CARD_COLORS:
+        if not all(color in options for options in off):
+            continue
+        sources = fixing.get(color, 0) - count_fixing([card]).get(color, 0)
+        if len(off) == 1 and sources >= 1:
+            return True
+        if len(off) == 2 and get_functional_cmc(card) >= 5 and sources >= 2:
+            return True
+    return False
+
+
 def build_variant_model(pool, event_type="PremierDraft", allowed=None, min_spells=None):
     """Deck chosen by the trained deck model (if one exists for the pool's set),
     with basics from the regular mana base math. allowed limits the cards it may pick."""
@@ -784,6 +801,17 @@ def build_variant_model(pool, event_type="PremierDraft", allowed=None, min_spell
         return None, []
 
     chosen = model.build(pool, allowed, min_spells) if min_spells else model.build(pool, allowed)
+    # The model splashes what 17Lands players registered, fixing or not. Hold its
+    # splash to the greedy builder's rule: one pip needs a fixing source, two pips
+    # only on a 5+ drop with two sources.
+    spells = [c for c in chosen if "Land" not in c.get("types", [])]
+    pips = mana_color_demand(spells, [])
+    main = sorted((c for c in pips if pips[c]), key=lambda c: -pips[c])[:2]
+    fixing = count_fixing(pool)
+    if main and not all(_splash_ok(c, main, fixing) for c in spells):
+        base = allowed
+        allowed = lambda c: (base is None or base(c)) and _splash_ok(c, main, fixing)
+        chosen = model.build(pool, allowed, min_spells) if min_spells else model.build(pool, allowed)
     lands = [c for c in chosen if "Land" in c.get("types", [])]
     if min_spells and lands:
         # min_spells means nonland cards: nonbasic lands the model picks don't count.

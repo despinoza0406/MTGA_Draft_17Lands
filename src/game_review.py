@@ -119,6 +119,81 @@ def _draws_cards(card: Dict) -> bool:
     return re.search(r"\bdraws? (a|an|one|two|three|four|x) cards?\b", text) is not None
 
 
+def _text(card: Dict) -> str:
+    return str(_rules(card).get("oracle_text", card.get("text", ""))).lower()
+
+
+def _effective_cost(card: Dict) -> float:
+    """Mana a card needs to do its job: X spells want X >= 2, and "when this enters,
+    you may pay {N}" (Lich's Relic) only does anything with N more."""
+    cost = float(card.get("cmc", 0) or 0)
+    if "{X}" in str(card.get("mana_cost", "")):
+        cost += 2
+    extra = re.search(r"enters, you may pay \{(\d+)\}", _text(card))
+    if extra:
+        cost += int(extra.group(1))
+    return cost
+
+
+def _no_target(card: Dict, turn: "TurnLog") -> bool:
+    """Removal with no creature to point at: holding it is waiting for a target."""
+    return "removal" in card.get("tags", []) and turn.opponent_creatures == 0
+
+
+def _discards(card: Dict) -> bool:
+    """Cards that discard as a cost (flashback, rummaging): a land in hand feeds them."""
+    text = _text(card)
+    return ", discard a card" in text or "discard a card:" in text or "discard a land" in text
+
+
+def _planned_double(game: "GameLog", turn: "TurnLog", held: int, card) -> bool:
+    """You cast the held card on your next turn and used (almost) all your mana then."""
+    later = [t for t in game.turns if t.mine and t.number > turn.number]
+    if not later or held not in later[0].spells_cast:
+        return False
+    spent = sum(float(card(g).get("cmc", 0) or 0) for g in later[0].spells_cast)
+    return spent >= later[0].lands_on_battlefield - 1
+
+
+def _step(game: "GameLog", number: int) -> Optional[Dict]:
+    return next((s for s in game.timeline or [] if s.get("turn") == number), None)
+
+
+def _creatures(board) -> List:
+    return [e for e in board or [] if len(e) > 2 and e[1] is not None and e[2] is not None]
+
+
+def _swing_back(blockers: List[bool], attackers: List) -> int:
+    """Damage the opponent's creatures get through if each blocker stops the biggest
+    attacker it can. blockers: has flying/reach; attackers: (power, flying)."""
+    left = sorted(attackers, key=lambda a: a[0], reverse=True)
+    for reach in sorted(blockers):  # ground blockers take ground attackers first
+        for i, (_, flying) in enumerate(left):
+            if reach or not flying:
+                left.pop(i)
+                break
+    return sum(p for p, _ in left)
+
+
+def attack_exposure(game: "GameLog", turn: "TurnLog", card) -> Optional[tuple]:
+    """(swing back with the blockers you kept, swing back had nobody attacked, your
+    total power) from the board at the end of your turn, or None without a record."""
+    end = (_step(game, turn.number) or {}).get("end") or {}
+    mine, theirs = _creatures(end.get("my_board")), _creatures(end.get("opp_board"))
+    if not end.get("my_board") and not theirs:
+        return None
+    reach = lambda e: _entry_has(e, card(e[0]), "flying") or _entry_has(e, card(e[0]), "reach")
+    attackers = [(e[1], _entry_has(e, card(e[0]), "flying")) for e in theirs if e[1] > 0]
+    kept = _swing_back([reach(e) for e in mine if not e[3]], attackers)
+    home = _swing_back([reach(e) for e in mine], attackers)
+    return kept, home, sum(max(0, e[1]) for e in mine)
+
+
+def _controls_planeswalker(game: "GameLog", turn: "TurnLog", card) -> bool:
+    end = (_step(game, turn.number) or {}).get("end") or {}
+    return any("Planeswalker" in card(e[0]).get("types", []) for e in end.get("my_board") or [])
+
+
 def _dead_on_board(turn: "TurnLog") -> bool:
     """The swing back kills you even with every creature home: holding back changed nothing."""
     return (
@@ -529,14 +604,24 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
     held_turns: Dict[int, int] = {}  # creature grpId -> consecutive turns held while castable
     prioritized = set()  # cards already flagged by the prioritization check
     for index, turn in enumerate(my_turns, start=1):
+        if (turn is game.turns[-1] and index > 1 and turn.lands_on_battlefield == 0
+                and not turn.end_hand and not turn.my_creatures):
+            continue  # the game ended mid-turn (concession): the record has no board
         top_cost = max((float(card(g).get("cmc", 0) or 0) for g in turn.end_hand
                         if "Land" not in card(g).get("types", [])), default=0)
         enough_lands = turn.lands_on_battlefield >= max(MISSED_LAND_ENOUGH, top_cost)
         # Mana left over and nothing in hand that needs more: holding the land costs
         # nothing now, and keeps a card in hand to bluff a trick.
         spare = turn.end_untapped_lands > 0 and turn.lands_on_battlefield >= max(MISSED_LAND_SPARE, top_cost)
+        # Only lands left in hand and enough on the table: the held card is a bluff.
+        spare = spare or (top_cost == 0 and turn.lands_on_battlefield >= MISSED_LAND_SPARE)
         if turn.lands_played == 0 and turn.end_hand_lands > 0 and not (enough_lands or spare):
-            findings.append(Finding(turn.number, "review", "No land played, but you had a land in hand.", "Missed land drop"))
+            yard = ((_step(game, turn.number) or {}).get("end") or {}).get("my_graveyard") or []
+            outlet = next((g for g in list(turn.end_hand) + list(yard) if _discards(card(g))), None)
+            if outlet:
+                findings.append(Finding(turn.number, "info", f"Kept a land in hand: {name(outlet)} can discard it."))
+            else:
+                findings.append(Finding(turn.number, "review", "No land played, but you had a land in hand.", "Missed land drop"))
 
         sources = turn.end_untapped_colors or [""] * turn.end_untapped_lands
 
@@ -545,9 +630,15 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
             cmc = float(c.get("cmc", 0) or 0)
             return cmc > 0 and can_pay(c.get("mana_cost", ""), cmc, sources)
 
+        def worth_casting(g):
+            # X spells for X=0, "you may pay" effects without the mana, removal with no target.
+            c = card(g)
+            return not _no_target(c, turn) and _effective_cost(c) <= len(sources)
+
         castable = [
             g for g in turn.end_hand
             if "Land" not in card(g).get("types", []) and not _instant_speed(card(g)) and payable(g)
+            and worth_casting(g)
         ]
         # Mana left open for an instant (or flash card) you could cast is often deliberate.
         held_up = [g for g in turn.end_hand if _instant_speed(card(g)) and payable(g)]
@@ -562,8 +653,8 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
                     "Unused mana held for instants",
                 )
             )
-        if castable and not held_up:
-            best = max(castable, key=lambda g: float(card(g).get("cmc", 0)))
+        best = max(castable, key=lambda g: float(card(g).get("cmc", 0))) if castable else None
+        if castable and not held_up and not _planned_double(game, turn, best, card):
             findings.append(
                 Finding(
                     turn.number,
@@ -580,14 +671,17 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
         castable_creatures = {
             g for g in turn.end_hand
             if "Creature" in card(g).get("types", []) and not _instant_speed(card(g)) and payable(g)
+            and worth_casting(g)
         }
+        # The mana you held up got used: a deliberate draw-go turn, not a stuck creature.
+        used_up = following is not None and any(g in following.spells_cast for g in held_up)
         held_turns = {g: held_turns.get(g, 0) + 1 for g in castable_creatures}
         for g, held in held_turns.items():
             if held == HELD_CREATURE_TURNS:
                 findings.append(
                     Finding(
                         turn.number,
-                        "review",
+                        "info" if used_up else "review",
                         f"Held {name(g)} for {held} turns with the mana to cast it"
                         + (" (kept mana open for instants instead)" if held_up else "")
                         + ". In Limited, playing threats on curve usually beats holding up instants.",
@@ -602,13 +696,23 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
         best_cast = max((_gihwr(card(g)) for g in cast_here), default=None)
         all_lands = turn.land_colors or [""] * turn.lands_on_battlefield
         unrated = any(_gihwr(card(g)) <= 0 for g in cast_here)
+        def fills(g):
+            # Casting it instead would have used the same mana: a cheaper card that
+            # leaves mana idle isn't better sequencing, it's a worse curve.
+            rest = spent - _effective_cost(card(g))
+            return rest < 1 or any(
+                h != g and "Land" not in card(h).get("types", []) and 0 < float(card(h).get("cmc", 0) or 0) <= rest
+                for h in turn.end_hand
+            )
+
         if best_cast is not None and not unrated and not any(_draws_cards(card(g)) for g in cast_here):
             better = [
                 g for g in set(turn.end_hand)
                 if g not in prioritized
                 and "Land" not in card(g).get("types", [])
                 and not _instant_speed(card(g))
-                and 0 < float(card(g).get("cmc", 0) or 0) <= spent
+                and 0 < _effective_cost(card(g)) <= spent
+                and fills(g)
                 and _gihwr(card(g)) >= best_cast + PRIORITY_GAP
                 and can_pay(card(g).get("mana_cost", ""), float(card(g).get("cmc", 0) or 0), all_lands)
             ]
@@ -630,24 +734,39 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
                         )
                     )
 
-        if (
-            turn.attackers > 0
-            and turn.life_end is not None
-            and turn.opponent_power + CRACK_BACK_MARGIN >= turn.life_end
-            and not _dead_on_board(turn)
-        ):
-            findings.append(
-                Finding(
-                    turn.number,
-                    "review",
-                    f"Attacked with {_plural(turn.attackers, 'creature')} while the opponent had {turn.opponent_power} power "
-                    f"on board and you were at {turn.life_end} life (pump spells and counters add more). "
-                    f"Did you keep enough blockers for their swing back?",
-                    "Risky attack",
-                )
-            )
+        exposure = attack_exposure(game, turn, card)
+        if turn.attackers > 0 and turn.life_end is not None and not _dead_on_board(turn):
+            if exposure is None:
+                risky = turn.opponent_power + CRACK_BACK_MARGIN >= turn.life_end
+                level = "review"
+                text = (f"Attacked with {_plural(turn.attackers, 'creature')} while the opponent had {turn.opponent_power} "
+                        f"power on board and you were at {turn.life_end} life (pump spells and counters add more). "
+                        f"Did you keep enough blockers for their swing back?")
+            else:
+                kept, home, power = exposure
+                # Only the attack's own risk counts: if staying home loses too, attacking
+                # is committing to your way to win, not a mistake.
+                risky = kept + CRACK_BACK_MARGIN >= turn.life_end > home + CRACK_BACK_MARGIN
+                racing = (turn.opponent_life_end is not None and turn.opponent_life_end <= power
+                          and kept < turn.life_end)
+                level = "info" if racing else "review"
+                text = (f"Attacked with {_plural(turn.attackers, 'creature')}: their swing back gets about {kept} "
+                        f"past the blockers you kept, with you at {turn.life_end} life (tricks add more). With "
+                        f"everyone home it would have been {home}."
+                        + (f" You threaten lethal next turn ({power} power vs their {turn.opponent_life_end} life), "
+                           f"so this was a race." if racing else " Was the damage worth that risk?"))
+            if risky:
+                findings.append(Finding(turn.number, level, text, "Risky attack"))
 
-        if turn.eligible_attackers > 0 and turn.opponent_blockers == 0 and turn.attackers == 0:
+        # Attacking taps your creatures, so it only counts as free when their swing back
+        # can't hurt you even with no blockers, and nothing of yours needs guarding.
+        their_board = _creatures(((_step(game, turn.number) or {}).get("end") or {}).get("opp_board"))
+        open_board = exposure is None or (
+            _swing_back([], [(e[1], False) for e in their_board if e[1] > 0]) + CRACK_BACK_MARGIN
+            < (turn.life_end or 0)
+        )
+        if (turn.eligible_attackers > 0 and turn.opponent_blockers == 0 and turn.attackers == 0 and open_board
+                and not _controls_planeswalker(game, turn, card)):
             findings.append(
                 Finding(turn.number, "review", f"The opponent had no untapped blockers, but you didn't attack with your "
                         f"{_plural(turn.eligible_attackers, 'creature')} that could attack.", "No attack into an empty board")
@@ -710,7 +829,7 @@ def review_game(game: GameLog, lookup: Callable[[List[str]], List[Dict]], benchm
     behind = first_turn_behind(game)
     if behind:
         findings.append(
-            Finding(behind.number, "review",
+            Finding(behind.number, "info",
                     f"Behind on board: you had {_plural(behind.my_creatures, 'creature')} ({behind.my_power} power), "
                     f"the opponent {_plural(behind.opponent_creatures, 'creature')} ({behind.opponent_power} power). "
                     f"What could you have played earlier?",
@@ -898,6 +1017,14 @@ def _priority_context(game: GameLog, turn: TurnLog, held: int, cast: List[int], 
             return "info", f"{board} Under pressure, deploying defense first can be right."
         return "review", (f"{board} Even under pressure it rated higher: check which of its effects "
                           f"(and on which target) would have answered the threats on board.")
+    held_card = card(held)
+    if "removal" in held_card.get("tags", []):
+        return "info", f"{board} Saving removal for a better target is often right.".strip()
+    threats = ("Creature", "Planeswalker")
+    if any(t in held_card.get("types", []) for t in threats) and any(
+            any(t in card(g).get("types", []) for t in threats) for g in cast):
+        return "info", (f"{board} Leading with the lesser threat can draw out their removal before "
+                        f"{held_card.get('name')} lands. Fine if that was the plan.").strip()
     return "review", f"{board} Play your best card first unless you were setting up a double spell.".strip()
 HELD_CREATURE_TURNS = 2
 CRACK_BACK_MARGIN = 3  # pump spells, counters and tricks on the opponent's turn
