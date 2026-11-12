@@ -441,3 +441,110 @@ class TestDownloadPanel:
         panel._delete_dataset(target_file)
 
         mock_warn.assert_called_once()
+
+
+class TestDownloadSetPicker:
+    """#260: the SET picker is a searchable, scrolling combobox."""
+
+    @pytest.fixture
+    def root(self):
+        root = tkinter.Tk()
+        Theme.apply(root, "Dark")
+        yield root
+        root.destroy()
+
+    @pytest.fixture
+    def panel(self, root):
+        sets = {
+            f"Set Number {i}": SetInfo(
+                arena=[f"S{i}"],
+                seventeenlands=[f"S{i}"],
+                formats=["PremierDraft"],
+                set_code=f"S{i}",
+                start_date="2024-01-01",
+            )
+            for i in range(60)
+        }
+        sets["Outlaws of Thunder Junction"] = SetInfo(
+            arena=["OTJ"],
+            seventeenlands=["OTJ"],
+            formats=["TradDraft", "QuickDraft"],
+            set_code="OTJ",
+            start_date="2024-04-16",
+        )
+        config = MagicMock()
+        config.card_data.excluded_datasets = []
+        config.settings.database_location = "/mock"
+        config.settings.column_configs = {"dataset_manager": ["Set", "Event"]}
+        return DownloadWindow(root, MagicMock(data=sets, latest_set="S0"), config, MagicMock())
+
+    def test_is_a_scrolling_combobox_with_every_set(self, panel):
+        assert isinstance(panel.om_set, tkinter.ttk.Combobox)
+        assert int(panel.om_set.cget("height")) < len(panel.set_options)
+        assert len(panel.om_set.cget("values")) == len(panel.set_options) == 61
+
+    def test_typing_filters_the_list(self, panel):
+        panel.vars["set"].set("thunder")
+        panel._filter_set_options(MagicMock(keysym="r"))
+        assert list(panel.om_set.cget("values")) == ["Outlaws of Thunder Junction"]
+        panel.vars["set"].set("")
+        panel._filter_set_options(MagicMock(keysym="BackSpace"))
+        assert len(panel.om_set.cget("values")) == 61
+
+    def test_unique_partial_name_commits_the_set(self, panel):
+        panel.vars["set"].set("thunder")
+        panel._commit_set_entry()
+        assert panel.vars["set"].get() == "Outlaws of Thunder Junction"
+        assert panel.vars["start"].get() == "2024-04-16"
+        assert panel.vars["event"].get() == "QuickDraft"
+        assert len(panel.om_set.cget("values")) == 61
+
+    def test_unknown_or_ambiguous_text_reverts(self, panel):
+        before = panel.vars["set"].get()
+        for text in ("no such set", "Set Number"):
+            panel.vars["set"].set(text)
+            panel._commit_set_entry()
+            assert panel.vars["set"].get() == before
+
+    def test_list_pick_applies_the_set(self, panel):
+        panel.vars["set"].set("Outlaws of Thunder Junction")
+        panel._on_set_selected()
+        assert panel.vars["event"].get() == "QuickDraft"
+        # re-committing the same set (e.g. on focus out) keeps the user's event
+        panel.vars["event"].set("TradDraft")
+        panel._commit_set_entry()
+        assert panel.vars["event"].get() == "TradDraft"
+
+    def test_popup_focus_preserves_filtered_selection(self, root, panel):
+        panel.pack(fill="both", expand=True)
+        root.deiconify()
+        root.update()
+        panel.om_set.focus_force()
+        root.update()
+        panel.vars["set"].set("Set Number 1")
+        panel._filter_set_options()
+        matches = tuple(panel.om_set.cget("values"))
+        assert len(matches) == 11
+        # Non-Aqua comboboxes focus a descendant popup listbox when posted.
+        popup = tkinter.Toplevel(panel.om_set)
+        choices = tkinter.Listbox(popup)
+        choices.pack()
+        root.update()
+        choices.focus_force()
+        root.update()
+        assert tuple(panel.om_set.cget("values")) == matches
+        panel.om_set.current(1)
+        panel.om_set.event_generate("<<ComboboxSelected>>")
+        root.update()
+        assert panel.vars["set"].get() == "Set Number 10"
+        popup.destroy()
+
+    @pytest.mark.parametrize("text", ["thunder", "unknown set", "Set Number"])
+    def test_download_commits_typed_set(self, panel, text):
+        previous = panel._committed_set
+        panel.vars["set"].set(text)
+        with patch.object(panel, "_start_download") as start:
+            panel._manual_download()
+            start.assert_called_once()
+            expected = "Outlaws of Thunder Junction" if text == "thunder" else previous
+            assert panel.vars["set"].get() == expected
