@@ -11,6 +11,10 @@ Architecture (same numpy-friendly shape as the pick model, minus pick position):
 
 Usage:
     python training/deck_model/train.py <decks.npz> <out_model.npz> [<17lands_set_file.json>]
+        [--init <model.npz>] [--epochs N]
+
+--init starts from another deck model's weights (same card list), e.g. the
+Premier Draft model when there are few Sealed decks to learn from.
 """
 
 import sys
@@ -83,7 +87,7 @@ def gihwr_baseline(info, pool, deck):
     return top_k_overlap(scores, pool, deck)
 
 
-def main(data_path, out_path, set_file=None):
+def main(data_path, out_path, set_file=None, init=None, epochs=EPOCHS):
     torch.manual_seed(0)
     rng = np.random.default_rng(0)
     data = dict(np.load(data_path))
@@ -97,9 +101,20 @@ def main(data_path, out_path, set_file=None):
     print(f"{len(card_names)} cards | train {len(train_idx):,} decks | validation {len(val_idx):,}")
 
     model = DeckModel(len(card_names))
+    if init:
+        start = np.load(init)
+        assert list(start["card_names"]) == list(card_names), "--init model has a different card list"
+        model.load_state_dict({
+            "pool_emb.weight": torch.from_numpy(start["pool_w"].T.copy()),
+            "pool_emb.bias": torch.from_numpy(start["pool_b"]),
+            "hidden.weight": torch.from_numpy(start["hidden_w"].T.copy()),
+            "hidden.bias": torch.from_numpy(start["hidden_b"]),
+            "card_emb": torch.from_numpy(start["card_emb"]),
+            "card_bias": torch.from_numpy(start["card_bias"]),
+        })
     optim = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.OneCycleLR(
-        optim, max_lr=LR, total_steps=EPOCHS * (len(train_idx) // BATCH + 1)
+        optim, max_lr=LR, total_steps=epochs * (len(train_idx) // BATCH + 1)
     )
     bce = nn.BCEWithLogitsLoss(reduction="none")
 
@@ -108,7 +123,7 @@ def main(data_path, out_path, set_file=None):
         with torch.no_grad():
             return model(torch.from_numpy(pool_all[idx])).numpy()
 
-    for epoch in range(EPOCHS):
+    for epoch in range(epochs):
         model.train()
         t0, total = time.time(), 0.0
         order = rng.permutation(train_idx)
@@ -126,7 +141,7 @@ def main(data_path, out_path, set_file=None):
             total += loss.item() * len(rows)
         overlap = top_k_overlap(scores_for(val_idx), data["pool"][val_idx], data["deck"][val_idx])
         print(
-            f"epoch {epoch + 1}/{EPOCHS} loss {total / len(train_idx):.4f} | val deck overlap {overlap:.3f} | {time.time() - t0:.0f}s",
+            f"epoch {epoch + 1}/{epochs} loss {total / len(train_idx):.4f} | val deck overlap {overlap:.3f} | {time.time() - t0:.0f}s",
             flush=True,
         )
 
@@ -150,6 +165,7 @@ def main(data_path, out_path, set_file=None):
             json.dumps(
                 {
                     "source": str(data_path),
+                    "init": str(init) if init else None,
                     "trained": datetime.date.today().isoformat(),
                     "decks": int(len(train_idx)),
                     **{k: round(float(v), 4) for k, v in final.items()},
@@ -161,4 +177,9 @@ def main(data_path, out_path, set_file=None):
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:4])
+    args, init, epochs = sys.argv[1:], None, EPOCHS
+    if "--init" in args:
+        i = args.index("--init"); init = args[i + 1]; del args[i:i + 2]
+    if "--epochs" in args:
+        i = args.index("--epochs"); epochs = int(args[i + 1]); del args[i:i + 2]
+    main(*args[:3], init=init, epochs=epochs)

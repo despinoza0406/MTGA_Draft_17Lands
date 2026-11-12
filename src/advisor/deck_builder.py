@@ -828,7 +828,10 @@ def build_variant_model(pool, event_type="PremierDraft", allowed=None, min_spell
         colors,
         forced_count=40 - sum(c.get("count", 1) for c in chosen),
     )
-    return stack_cards(chosen + basics), colors
+    # stack_cards counts entries, not their "count": a sealed pool lists each card
+    # once with its copies, so expand them first or duplicates are lost.
+    copies = [dict(c, count=1) for c in chosen + basics for _ in range(c.get("count", 1))]
+    return stack_cards(copies), colors
 
 
 MAX_MODEL_PAIRS = 2

@@ -3,7 +3,9 @@ training/pick_model/update.py
 One command to (re)train the models for a set: downloads the 17Lands public
 draft and game dumps when they changed, trains the pick model (this folder) and
 the deck model (training/deck_model), and installs both into the tool's Models
-folder.
+folder. With the Premier Draft event it also builds the set's Sealed deck model:
+the Premier deck model fine-tuned on the Sealed and Traditional Sealed decks
+(too few of them to learn from scratch).
 
 Usage:
     python training/pick_model/update.py [<SET>] --tool-dir C:/MtgaDraftTool [--event PremierDraft] [--data-dir data]
@@ -18,6 +20,7 @@ import importlib.util
 import json
 import os
 import shutil
+import numpy as np
 import requests
 
 import prepare
@@ -58,6 +61,57 @@ def download_if_changed(url: str, path: str) -> bool:
     return True
 
 
+SEALED_EVENTS = ("Sealed", "TradSealed")
+
+
+def sealed_deck_model(set_code, args, set_file):
+    """Fine-tunes the installed Premier deck model on the set's Sealed decks and
+    installs it as <SET>_Sealed_deck_model.npz. Skips quietly when 17Lands has no
+    Sealed dump yet or nothing changed."""
+    base = os.path.join(args.tool_dir, "Models", f"{set_code}_PremierDraft_deck_model.npz")
+    installed = os.path.join(args.tool_dir, "Models", f"{set_code}_Sealed_deck_model.npz")
+    if not os.path.exists(base):
+        return
+    dumps, changed = [], False
+    for event in SEALED_EVENTS:
+        url = GAME_DUMP_URL.format(set=set_code, event=event)
+        if requests.head(url, timeout=30).status_code != 200:
+            continue
+        dump = os.path.join(args.data_dir, f"game_data_public.{set_code}.{event}.csv.gz")
+        changed |= download_if_changed(url, dump)
+        dumps.append(dump)
+    if not dumps:
+        print(f"no Sealed dump for {set_code} yet")
+        return
+    if not changed and not args.force and os.path.exists(installed)             and os.path.getmtime(installed) >= os.path.getmtime(base):
+        print(f"sealed deck model already current: {installed}")
+        return
+
+    prep, trainer = _load_deck_module("prepare"), _load_deck_module("train")
+    parts = []
+    for dump in dumps:
+        arrays = dump.replace(".csv.gz", "_decks.npz")
+        prep.main(dump, arrays)
+        parts.append(dict(np.load(arrays)))
+        os.remove(arrays)
+    names = parts[0]["card_names"]
+    parts = [p for p in parts if list(p["card_names"]) == list(names)]
+    combined = os.path.join(args.data_dir, f"{set_code}_Sealed_decks.npz")
+    np.savez(combined, **{k: names if k == "card_names" else np.concatenate([p[k] for p in parts])
+                          for k in parts[0]})
+    model = os.path.join(args.data_dir, f"{set_code}_Sealed_deck_model.npz")
+    try:
+        trainer.main(combined, model, set_file, init=base)
+    except AssertionError as e:  # the Premier model's card list differs from the dump's
+        print(f"sealed deck model skipped: {e}")
+        return
+    finally:
+        if not args.keep_arrays:
+            os.remove(combined)
+    shutil.copyfile(model, installed)
+    print(f"installed {installed}")
+
+
 def active_set(tool_dir):
     """Set of the most recent draft log ('DraftLog_FRA_QuickDraft_<id>.log' -> 'FRA'),
     falling back to the dataset selected in the tool's config."""
@@ -81,6 +135,7 @@ def main():
     parser.add_argument("--data-dir", default="data", help="Where the 17Lands dump and arrays are kept")
     parser.add_argument("--force", action="store_true", help="Retrain even if the dump did not change")
     parser.add_argument("--keep-arrays", action="store_true", help="Keep the prepared arrays (~1.5 GB)")
+    parser.add_argument("--no-sealed", action="store_true", help="Skip the Sealed deck model")
     args = parser.parse_args()
 
     set_code = (args.set or active_set(args.tool_dir) or "").upper()
@@ -127,6 +182,9 @@ def main():
         print(f"installed {bench_installed}")
     else:
         print(f"benchmarks already current: {bench_installed}")
+
+    if args.event == "PremierDraft" and not args.no_sealed:
+        sealed_deck_model(set_code, args, set_file)
 
 
 if __name__ == "__main__":

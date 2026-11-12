@@ -311,27 +311,9 @@ class CustomDeckPanel(ttk.Frame):
         # 2. Deck Check Tab: what the deck does well, what it's short of, swaps
         self.check_tab = ttk.Frame(self.notebook, padding=Theme.scaled_val(10))
         self.notebook.add(self.check_tab, text=" DECK CHECK ")
-        self.check_tab.rowconfigure(0, weight=1)
-        self.check_tab.columnconfigure(0, weight=1)
-        self.check_text = tkinter.Text(
-            self.check_tab, wrap="word", relief="flat", borderwidth=0,
-            bg=Theme.BG_PRIMARY, fg=Theme.TEXT_MAIN, font=Theme.scaled_font(10),
-            padx=Theme.scaled_val(8), pady=Theme.scaled_val(6), cursor="arrow",
-            highlightthickness=0,
-        )
-        check_scroll = AutoScrollbar(self.check_tab, orient="vertical", command=self.check_text.yview)
-        self.check_text.configure(yscrollcommand=check_scroll.set)
-        self.check_text.grid(row=0, column=0, sticky="nsew")
-        check_scroll.grid(row=0, column=1, sticky="ns")
-        tag = self.check_text.tag_configure
-        tag("h", font=Theme.scaled_font(11, "bold"), spacing1=Theme.scaled_val(10), spacing3=Theme.scaled_val(4))
-        tag("big", font=Theme.scaled_font(13, "bold"), spacing3=Theme.scaled_val(4))
-        tag("good", foreground=Theme.SUCCESS, font=Theme.scaled_font(10, "bold"))
-        tag("fix", foreground=Theme.WARNING, font=Theme.scaled_font(10, "bold"))
-        tag("info", foreground=Theme.TEXT_MUTED, font=Theme.scaled_font(10, "bold"))
-        tag("muted", foreground=Theme.TEXT_MUTED)
-        tag("line", spacing3=Theme.scaled_val(5), lmargin2=Theme.scaled_val(22))
-        self.check_text.configure(state="disabled")
+        from src.ui.deck_check_view import make_check_text
+
+        self.check_text = make_check_text(self.check_tab)
 
         # 3. Stats Tab
         self.stats_tab = ttk.Frame(self.notebook)
@@ -1526,51 +1508,10 @@ class CustomDeckPanel(ttk.Frame):
             return None
 
     def _render_deck_check(self):
-        from src.advisor.deck_check import check_deck
-        from src.advisor.deck_model import load_deck_model
+        from src.ui.deck_check_view import render_deck_check
 
-        text = self.check_text
-        text.configure(state="normal")
-        text.delete("1.0", "end")
-        if not self.deck_list:
-            text.insert("end", "Build a deck (or send one here from Suggest Deck / Load Arena deck) "
-                               "and this tab checks it: what it does well, what it's short of, and "
-                               "which sideboard cards would make it better.", "muted")
-            text.configure(state="disabled")
-            return
         set_code, event = self._event()
-        sets = [c.get("set") for c in self.deck_list + self.sb_list if c.get("set")]
-        set_code = set_code or (max(set(sets), key=sets.count) if sets else "")
-        model = load_deck_model(set_code, event) if set_code else None
-        result = check_deck(self.deck_list, self.sb_list, self._metrics(), model,
-                            is_bo3="Trad" in str(event))
-
-        colors = "".join(result.colors) + (f" + {''.join(result.splash)}" if result.splash else "")
-        line = f"{colors or 'Colorless'} · Est. {result.estimate}" if result.estimate else colors
-        text.insert("end", line + "\n", "big")
-        if result.model_estimate:
-            spells = sum(c.get("count", 1) for c in self.deck_list if "Land" not in c.get("types", []))
-            text.insert("end", f"🤖 Model build in these colors: Est. {result.model_estimate} · "
-                               f"{result.model_same} of your {spells} spells are the same.\n", "muted")
-
-        groups = (("good", "✔ What's working"), ("fix", "⚠ What to improve"), ("info", "ℹ Worth knowing"))
-        icons = {"good": "✔", "fix": "⚠", "info": "ℹ"}
-        for level, title in groups:
-            notes = [n for n in result.notes if n.level == level]
-            if not notes:
-                continue
-            text.insert("end", title + "\n", "h")
-            for n in notes:
-                text.insert("end", f"{icons[level]} {n.title}: ", level)
-                text.insert("end", n.text + "\n", "line")
-        if result.swaps:
-            text.insert("end", "⇄ Swaps to consider\n", "h")
-            for sw in result.swaps:
-                text.insert("end", f"⇄ {sw.out} → {sw.into}: ", "fix")
-                text.insert("end", sw.reason + "\n", "line")
-        elif result.notes:
-            text.insert("end", "\nNo sideboard card clearly beats one you play.\n", "muted")
-        text.configure(state="disabled")
+        render_deck_check(self.check_text, self.deck_list, self.sb_list, self._metrics(), set_code, event)
 
     def _arena_current_main(self):
         """Names in the deck you last clicked Done on in Arena, when it's from this pool."""

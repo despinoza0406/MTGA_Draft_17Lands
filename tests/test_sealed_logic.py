@@ -116,3 +116,27 @@ def test_generate_sealed_shells(monkeypatch):
     assert len(session.variants) >= 2
     assert any("Safe 2-Color" in k for k in session.variants.keys())
     assert any("Aggro Curve" in k for k in session.variants.keys())
+
+
+def test_generate_sealed_shells_puts_model_builds_first(monkeypatch):
+    import src.advisor.deck_builder as deck_builder
+
+    session = SealedSession("model_id")
+    pool = [{DATA_FIELD_NAME: f"Card {i}", "colors": ["G"], "cmc": 2, "types": ["Creature"],
+             "deck_colors": {"All Decks": {"gihwr": 55.0}}} for i in range(45)]
+    session.load_pool(pool)
+    built = [dict(c, count=1) for c in pool[:23]] + [{DATA_FIELD_NAME: "Forest", "types": ["Land", "Basic"], "count": 17}]
+    seen = {}
+
+    def fake_variants(p, event_type):
+        seen["event"] = event_type
+        return [(deck_builder.MODEL_VARIANT, built, ["G"])]
+
+    monkeypatch.setattr(deck_builder, "build_model_variants", fake_variants)
+    metrics = type("M", (), {"get_metrics": lambda self, c, f: (55.0, 4.0)})()
+    generate_sealed_shells(session, metrics, None, "TradSealed")
+    first = next(iter(session.variants))
+    assert seen["event"] == "TradSealed" and first.startswith(deck_builder.MODEL_VARIANT)
+    assert session.active_variant_name == first
+    main, _ = session.get_active_deck_lists()
+    assert sum(c["count"] for c in main) == 40

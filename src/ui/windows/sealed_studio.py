@@ -5,6 +5,7 @@ Features both a detailed List View and a highly interactive,
 MTGA-style Visual Drag-and-Drop Deckbuilder with card images.
 """
 
+import logging
 import tkinter
 from tkinter import ttk, messagebox, simpledialog
 import ttkbootstrap as tb
@@ -34,6 +35,8 @@ from src.utils import open_file
 
 
 SEALEDDECK_HOSTS = ("sealeddeck.tech", "www.sealeddeck.tech")
+
+logger = logging.getLogger(__name__)
 
 
 def is_sealeddeck_url(url) -> bool:
@@ -152,6 +155,13 @@ class SealedStudioWindow(tb.Toplevel):
             bootstyle="success",
             command=self._on_auto_generate,
         ).pack(side="left", padx=Theme.scaled_val(20))
+
+        tb.Button(
+            header,
+            text="✅ Deck Check",
+            bootstyle="success-outline",
+            command=self._open_deck_check,
+        ).pack(side="left", padx=Theme.scaled_val(10))
 
         tb.Button(
             header,
@@ -775,10 +785,51 @@ class SealedStudioWindow(tb.Toplevel):
         self.update_idletasks()
 
         tier_data = self.app_context.orchestrator.scanner.retrieve_tier_data()
-        generate_sealed_shells(self.session, self.metrics, tier_data)
+        generate_sealed_shells(self.session, self.metrics, tier_data, self._event()[1] or "Sealed")
 
         self._refresh_tabs()
         self._refresh_data()
+
+    def _event(self):
+        try:
+            return self.app_context.orchestrator.scanner.retrieve_current_limited_event()
+        except Exception:
+            return "", ""
+
+    def _open_deck_check(self):
+        """A side window checking the active build; it follows edits and tab changes."""
+        from src.ui.deck_check_view import make_check_text
+
+        win = getattr(self, "_check_window", None)
+        if win is not None and win.winfo_exists():
+            win.lift()
+        else:
+            win = tkinter.Toplevel(self)
+            win.title("Deck Check - Sealed Studio")
+            win.geometry(f"{Theme.scaled_val(460)}x{Theme.scaled_val(640)}")
+            win.configure(bg=Theme.BG_PRIMARY)
+            win.transient(self)
+            frame = ttk.Frame(win, padding=Theme.scaled_val(8))
+            frame.pack(fill="both", expand=True)
+            self._check_text = make_check_text(frame)
+            self._check_window = win
+        self._render_deck_check()
+
+    def _render_deck_check(self):
+        from src.ui.deck_check_view import render_deck_check
+
+        win = getattr(self, "_check_window", None)
+        if win is None or not win.winfo_exists():
+            return
+        main_deck, sideboard = self.session.get_active_deck_lists()
+        set_code, event = self._event()
+        try:
+            render_deck_check(self._check_text, main_deck, sideboard, self.metrics, set_code,
+                              event or "Sealed",
+                              empty_text="Move cards into this build (or Auto-Generate Shells) "
+                                         "and Deck Check reviews it here.")
+        except Exception as e:
+            logger.warning(f"Sealed deck check error: {e}")
 
     def _clear_deck(self):
         main_deck, _ = self.session.get_active_deck_lists()
@@ -863,6 +914,7 @@ class SealedStudioWindow(tb.Toplevel):
 
         self._update_hud(main_deck)
         self._update_basics_toolbar(main_deck)
+        self._render_deck_check()
 
     def _populate_tree(self, manager, card_list):
         tree = manager.tree

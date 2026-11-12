@@ -332,10 +332,31 @@ class SealedSession:
             return None
 
 
-def generate_sealed_shells(session: SealedSession, metrics, tier_data=None) -> None:
+def _add_model_shells(session: "SealedSession", pool: List[Dict], event_type: str) -> None:
+    """The trained deck model's builds (its overall pick plus up to two other color
+    pairs), first in the list. Nothing when the set has no deck model."""
+    try:
+        from src.advisor.deck_builder import build_model_variants
+
+        variants = build_model_variants(pool, event_type)
+    except Exception as e:
+        logger.warning(f"Sealed model shells failed: {e}")
+        return
+    for name, deck, colors in variants:
+        label = f"{name} ({''.join(colors)})" if colors else name
+        variant = SealedVariant(label)
+        for c in deck:
+            variant.add_card(c["name"], c.get("count", 1))
+        session.variants[variant.name] = variant
+        if not session.active_variant_name or session.active_variant_name not in session.variants:
+            session.active_variant_name = variant.name
+
+
+def generate_sealed_shells(session: SealedSession, metrics, tier_data=None, event_type: str = "Sealed") -> None:
     """
     Analyzes the SealedSession's master pool and mathematically generates
     the top 3 distinct shells, loading them directly into the session variants.
+    The deck model's builds, when the set has one, come first.
     """
     from src.card_logic import (
         identify_top_pairs,
@@ -350,6 +371,9 @@ def generate_sealed_shells(session: SealedSession, metrics, tier_data=None) -> N
         return
 
     session.variants.clear()
+    session.active_variant_name = ""
+    _add_model_shells(session, pool, event_type)
+    model_active = session.active_variant_name
     top_pairs = identify_top_pairs(pool, metrics, tier_data)
     if not top_pairs:
         top_pairs = [["W", "U"]]
@@ -366,7 +390,7 @@ def generate_sealed_shells(session: SealedSession, metrics, tier_data=None) -> N
         for c in con_deck:
             variant.add_card(c["name"], c.get("count", 1))
         session.variants[variant.name] = variant
-        session.active_variant_name = variant.name
+        session.active_variant_name = model_active or variant.name
 
     # 2. Greedy Splash
     greedy_deck, splash_color = build_variant_greedy(

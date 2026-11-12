@@ -94,10 +94,12 @@ _cache: Dict[str, Optional[PickModel]] = {}
 def find_model_path(
     set_code: str, event_type: str, folder: str = MODELS_FOLDER, suffix: str = MODEL_SUFFIX
 ) -> Optional[str]:
-    """Prefers an exact set/event model, then the set's Premier Draft model, then any for the set."""
+    """Prefers an exact set/event model, then the set's Sealed model for any sealed
+    event (TradSealed, ArenaDirect_Sealed...), then its Premier Draft model, then any."""
     if not set_code:
         return None
-    for candidate in (f"{set_code}_{event_type}", f"{set_code}_PremierDraft"):
+    family = [f"{set_code}_Sealed"] if "Sealed" in str(event_type) else []
+    for candidate in [f"{set_code}_{event_type}"] + family + [f"{set_code}_PremierDraft"]:
         path = os.path.join(folder, candidate + suffix)
         if os.path.exists(path):
             return path

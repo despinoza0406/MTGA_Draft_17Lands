@@ -150,3 +150,25 @@ def test_model_variant_drops_an_unsupported_double_pip_splash(tmp_path, monkeypa
     deck, _ = build_variant_model(blue + red + [bomb, single, spare, fixer])
     names_in = {c["name"] for c in deck}
     assert "Single" in names_in and "Bomb" not in names_in  # one source carries one pip, not two
+
+
+def test_model_variant_keeps_copies_of_a_stacked_sealed_pool(tmp_path, monkeypatch):
+    # Sealed pools list each card once with its copies; the deck must keep both.
+    names = [f"Blue {i}" for i in range(11)]
+    model = DeckModel(write_model(tmp_path / "m.npz", names, [4.0] * 11))
+    monkeypatch.setattr(deck_model, "load_deck_model", lambda set_code, event: model)
+    stacked = [spell(n, count=2) for n in names]
+    deck, _ = build_variant_model(stacked, "Sealed")
+    assert sum(c["count"] for c in deck) == 40
+    assert all(c["count"] == 2 for c in deck if c["name"].startswith("Blue"))
+
+
+def test_sealed_events_use_the_sets_sealed_model(tmp_path):
+    from src.advisor.pick_model import find_model_path
+
+    for event in ("Sealed", "PremierDraft"):
+        write_model(tmp_path / f"TST_{event}_deck_model.npz", ["A"], [0.0])
+    find = lambda event: find_model_path("TST", event, str(tmp_path), "_deck_model.npz")
+    assert find("TradSealed").endswith("TST_Sealed_deck_model.npz")
+    assert find("ArenaDirect_Sealed").endswith("TST_Sealed_deck_model.npz")
+    assert find("QuickDraft").endswith("TST_PremierDraft_deck_model.npz")
