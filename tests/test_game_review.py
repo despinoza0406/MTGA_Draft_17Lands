@@ -587,6 +587,21 @@ def test_no_blocks_respects_flying_the_attacker_had_then():
     assert [f for f in review_game(game([], timeline=[step]), lookup) if f.kind == "No blocks"]
 
 
+def test_no_blocks_ignores_attackers_one_creature_cant_block():
+    # Jiang Yanggu-style menace and unblockable attackers: a lone wall couldn't block them.
+    CARDS["7"] = {"name": "Menacer", "types": ["Creature"], "cmc": 5, "mana_cost": "{4}{R}",
+                  "oracle_text": "Menace (This creature can't be blocked except by two or more creatures.)"}
+    CARDS["8"] = {"name": "Sneak", "types": ["Creature"], "cmc": 2, "mana_cost": "{1}{U}",
+                  "oracle_text": "This creature can't be blocked."}
+    try:
+        step = _combat_step([], [[1, 4, 5, False, None, None]])
+        assert not [f for f in review_game(game([], timeline=[step]), lookup) if f.kind == "No blocks"]
+        del CARDS["8"]  # a plain attacker beside the menace one is still blockable
+        assert [f for f in review_game(game([], timeline=[step]), lookup) if f.kind == "No blocks"]
+    finally:
+        CARDS.pop("7", None), CARDS.pop("8", None)
+
+
 def test_live_keywords_read_unique_abilities():
     from src.game_review import _live_keywords
     assert _live_keywords({"uniqueAbilities": [{"grpId": 204300}, {"grpId": 8}, {"grpId": 9}]}) == ["flying"]

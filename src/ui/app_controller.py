@@ -97,6 +97,8 @@ class AppController:
             return
 
         def _check_app():
+            if not getattr(self.app.configuration.settings, "app_update_notifications_enabled", False):
+                return
             try:
                 v, _ = AppUpdate().retrieve_file_version()
                 if v and float(v) > float(constants.APPLICATION_VERSION):

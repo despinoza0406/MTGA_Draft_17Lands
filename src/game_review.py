@@ -877,7 +877,17 @@ def _has_keyword(card: Dict, keyword: str) -> bool:
         return True
     # First line of rules text: "Flying", "Flying, vigilance", "Reach"...
     first = str(rules.get("oracle_text", card.get("text", ""))).split("\n")[0].lower()
+    first = re.sub(r"\(.*?\)", "", first)  # reminder text: "Menace (This creature can't be blocked ...)"
     return keyword in [w.strip(" .") for w in first.split(",")]
+
+
+def _one_blocker_cant_block(card: Dict) -> bool:
+    """Menace, or unblockable: no single creature can block it."""
+    if _has_keyword(card, "menace"):
+        return True
+    text = str(_rules(card).get("oracle_text", card.get("text", ""))).lower()
+    text = re.sub(r"\(.*?\)", "", text)
+    return bool(re.search(r"(this creature|~) can't be blocked\.", text))
 
 
 def _tapped_out_in_combat(step: Dict) -> bool:
@@ -918,7 +928,8 @@ def missed_safe_blocks(game: GameLog, card) -> List[Finding]:
         for entry in (end.get("opp_board") or []) + (start.get("opp_board") or []):  # start wins: stats as they attacked
             stats[entry[0]] = (entry[1] or 0, entry[2] or 0)
             fliers[entry[0]] = has(entry, "flying")
-        attackers = [stats[g] + (g,) for who, g in combat["attackers"] if who == "opp" and g in stats]
+        attackers = [stats[g] + (g,) for who, g in combat["attackers"]
+                     if who == "opp" and g in stats and not _one_blocker_cant_block(card(g))]
         found = None
         for mine in start.get("my_board") or []:
             grp, power, toughness, tapped = mine[0], mine[1] or 0, mine[2] or 0, mine[3]

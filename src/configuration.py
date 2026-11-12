@@ -95,6 +95,8 @@ class Settings(BaseModel):
     card_colors_enabled: bool = False
     draft_log_enabled: bool = True
     update_notifications_enabled: bool = True
+    # Off: this fork merges upstream releases from source, so the release popup only nags.
+    app_update_notifications_enabled: bool = False
     missing_notifications_enabled: bool = True
     auto_sync_datasets: bool = True
     show_splash_screen: bool = True
